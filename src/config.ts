@@ -19,17 +19,10 @@ export const config = {
   facebook: {
     accessToken: process.env.FACEBOOK_ACCESS_TOKEN ?? "",
     pageId: process.env.FACEBOOK_PAGE_ID ?? "",
-    adAccountId: normalizeAdAccountId(process.env.FACEBOOK_AD_ACCOUNT_ID ?? ""),
     graphVersion: process.env.FACEBOOK_GRAPH_VERSION ?? "v21.0",
   },
   downloadDir: resolve(process.env.DOWNLOAD_DIR ?? "./downloads"),
 };
-
-/** Ajoute le préfixe `act_` attendu par la Marketing API s'il est absent. */
-export function normalizeAdAccountId(id: string): string {
-  if (!id) return "";
-  return id.startsWith("act_") ? id : `act_${id}`;
-}
 
 export function requireTelegram(): void {
   if (!config.telegram.apiId || !config.telegram.apiHash) {

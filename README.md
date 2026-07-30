@@ -4,8 +4,11 @@ Serveur **MCP** (Model Context Protocol) qui permet à Claude de :
 
 - 📥 **Récupérer des vidéos sur Telegram** (canaux, groupes, discussions)
 - ✍️ **Ajouter une description personnalisée** et **reposter sur Facebook**
-- 📄 **Gérer un compte / une Page Facebook** (publications, statistiques)
-- 📢 **Gérer les campagnes publicitaires** (lister, créer, activer/mettre en pause, analyser les performances)
+- 📄 **Gérer une Page Facebook** (publications, statistiques)
+
+> 📢 **Publicités :** la gestion des campagnes publicitaires n'est volontairement
+> pas incluse ici — elle est assurée par le **MCP Facebook Ads officiel**, plus
+> complet. Ce serveur se concentre sur ce qu'il fait de unique : Telegram + Pages.
 
 ## Outils exposés
 
@@ -17,11 +20,6 @@ Serveur **MCP** (Model Context Protocol) qui permet à Claude de :
 | `facebook_post_video` | Publie une vidéo locale sur une Page (titre + description) |
 | `facebook_post_feed` | Publie un post texte (avec lien) sur une Page |
 | `facebook_page_insights` | Statistiques d'une Page |
-| `facebook_list_ad_accounts` | Liste les comptes publicitaires |
-| `facebook_list_campaigns` | Liste les campagnes d'un compte |
-| `facebook_create_campaign` | Crée une campagne (en pause par défaut) |
-| `facebook_update_campaign_status` | Active / met en pause / archive une campagne |
-| `facebook_get_insights` | Performances d'une campagne/adset/pub |
 | `repost_telegram_to_facebook` | **Workflow complet** : Telegram → Facebook en une étape |
 
 ---
@@ -72,11 +70,9 @@ cp .env.example .env
 
 1. Allez sur <https://developers.facebook.com/tools/explorer>.
 2. Sélectionnez votre application et générez un **jeton** avec les permissions :
-   `pages_show_list`, `pages_manage_posts`, `pages_read_engagement`,
-   `ads_management`, `ads_read`, `business_management`.
+   `pages_show_list`, `pages_manage_posts`, `pages_read_engagement`, `read_insights`.
 3. Renseignez `FACEBOOK_ACCESS_TOKEN`.
-4. (Optionnel) Définissez `FACEBOOK_PAGE_ID` et `FACEBOOK_AD_ACCOUNT_ID`
-   pour éviter de les passer à chaque appel.
+4. (Optionnel) Définissez `FACEBOOK_PAGE_ID` pour éviter de le passer à chaque appel.
 
 > 💡 Pour publier sur une Page, utilisez de préférence un **Page Access Token**
 > (renvoyé par `facebook_list_pages`). Pensez à un **jeton longue durée** pour la production.
@@ -103,8 +99,7 @@ cp .env.example .env
         "TELEGRAM_API_HASH": "xxxxxxxx",
         "TELEGRAM_SESSION": "1Ab...collée...ici",
         "FACEBOOK_ACCESS_TOKEN": "EAAB...",
-        "FACEBOOK_PAGE_ID": "1234567890",
-        "FACEBOOK_AD_ACCOUNT_ID": "act_1234567890"
+        "FACEBOOK_PAGE_ID": "1234567890"
       }
     }
   }
@@ -153,8 +148,7 @@ Une interface web s'ouvre : vous pouvez appeler chaque outil manuellement.
 - « Liste les 10 dernières vidéos du canal `@moncanal` »
 - « Télécharge la vidéo message 4523 de `@moncanal` puis reposte-la sur ma Page
   avec la description : *Nouvelle vidéo exclusive ! 🔥* »
-- « Montre mes campagnes publicitaires et mets en pause celles dont le CPC dépasse 0,50 € »
-- « Crée une campagne 'Promo été' avec l'objectif OUTCOME_TRAFFIC et 10 €/jour de budget »
+- « Affiche les statistiques de ma Page sur les 7 derniers jours »
 
 ---
 
@@ -165,8 +159,7 @@ Une interface web s'ouvre : vous pouvez appeler chaque outil manuellement.
   vous êtes membre — au-delà de la limite de 20 Mo de l'API Bot.
 - **Publication vidéo Facebook** : upload multipart standard, adapté jusqu'à
   ~1 Go. Un futur ajout pourra gérer l'upload *resumable* pour les très gros fichiers.
-- Les campagnes sont créées **en pause** par défaut : un `ad set` et une `ad`
-  restent nécessaires pour diffuser réellement (extension prévue).
+- **Publicités** : gérées par le MCP Facebook Ads officiel, pas par ce serveur.
 - Ne committez **jamais** votre `.env` (déjà ignoré par git).
 
 ## Licence

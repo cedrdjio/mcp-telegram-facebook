@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { basename } from "node:path";
-import { config, requireFacebook, normalizeAdAccountId } from "./config.js";
+import { config, requireFacebook } from "./config.js";
 
 const GRAPH_BASE = () => `https://graph.facebook.com/${config.facebook.graphVersion}`;
 
@@ -131,70 +131,4 @@ export async function postToPageFeed(args: {
     throw new Error(`Échec du post (${res.status}): ${(data as GraphError).error?.message ?? ""}`);
   }
   return data;
-}
-
-/* ----------------------- Marketing / Publicités ----------------------- */
-
-function adAccount(id?: string): string {
-  const account = normalizeAdAccountId(id || config.facebook.adAccountId);
-  if (!account) {
-    throw new Error(
-      "Aucun compte publicitaire : passez `adAccountId` ou définissez FACEBOOK_AD_ACCOUNT_ID."
-    );
-  }
-  return account;
-}
-
-export async function listAdAccounts(): Promise<unknown> {
-  return graphRequest("me/adaccounts", {
-    params: { fields: "id,name,account_status,currency,amount_spent,balance" },
-  });
-}
-
-export async function listCampaigns(adAccountId?: string): Promise<unknown> {
-  return graphRequest(`${adAccount(adAccountId)}/campaigns`, {
-    params: {
-      fields: "id,name,objective,status,effective_status,daily_budget,lifetime_budget,created_time",
-      limit: 50,
-    },
-  });
-}
-
-export async function createCampaign(args: {
-  adAccountId?: string;
-  name: string;
-  objective: string; // ex: OUTCOME_TRAFFIC, OUTCOME_ENGAGEMENT, OUTCOME_SALES...
-  status?: "ACTIVE" | "PAUSED";
-  dailyBudget?: number; // en centimes de la devise du compte
-  lifetimeBudget?: number;
-}): Promise<unknown> {
-  const params: Record<string, string | number> = {
-    name: args.name,
-    objective: args.objective,
-    status: args.status ?? "PAUSED",
-    special_ad_categories: "[]",
-  };
-  if (args.dailyBudget) params.daily_budget = args.dailyBudget;
-  if (args.lifetimeBudget) params.lifetime_budget = args.lifetimeBudget;
-
-  return graphRequest(`${adAccount(args.adAccountId)}/campaigns`, {
-    method: "POST",
-    params,
-  });
-}
-
-export async function updateCampaignStatus(
-  campaignId: string,
-  status: "ACTIVE" | "PAUSED" | "ARCHIVED" | "DELETED"
-): Promise<unknown> {
-  return graphRequest(campaignId, { method: "POST", params: { status } });
-}
-
-export async function getInsights(objectId: string, datePreset = "last_30d"): Promise<unknown> {
-  return graphRequest(`${objectId}/insights`, {
-    params: {
-      fields: "impressions,reach,clicks,spend,cpc,cpm,ctr,actions",
-      date_preset: datePreset,
-    },
-  });
 }

@@ -9,11 +9,6 @@ import {
   getPageInsights,
   postVideoToPage,
   postToPageFeed,
-  listAdAccounts,
-  listCampaigns,
-  createCampaign,
-  updateCampaignStatus,
-  getInsights,
 } from "./facebook.js";
 
 const server = new McpServer({
@@ -139,102 +134,6 @@ server.tool(
   async ({ pageId, metrics, period }) => {
     try {
       return ok(await getPageInsights(pageId, metrics, period));
-    } catch (e) {
-      return fail(e);
-    }
-  }
-);
-
-/* ==================== Facebook — Publicités (Ads) ==================== */
-
-server.tool(
-  "facebook_list_ad_accounts",
-  "Liste les comptes publicitaires accessibles (ID, nom, devise, statut, dépenses).",
-  {},
-  async () => {
-    try {
-      return ok(await listAdAccounts());
-    } catch (e) {
-      return fail(e);
-    }
-  }
-);
-
-server.tool(
-  "facebook_list_campaigns",
-  "Liste les campagnes publicitaires d'un compte (objectif, statut, budget).",
-  {
-    adAccountId: z.string().optional().describe("ID du compte (sinon FACEBOOK_AD_ACCOUNT_ID)."),
-  },
-  async ({ adAccountId }) => {
-    try {
-      return ok(await listCampaigns(adAccountId));
-    } catch (e) {
-      return fail(e);
-    }
-  }
-);
-
-server.tool(
-  "facebook_create_campaign",
-  "Crée une campagne publicitaire. Par sécurité elle est créée en PAUSED par défaut.",
-  {
-    name: z.string().describe("Nom de la campagne."),
-    objective: z
-      .string()
-      .describe(
-        "Objectif ODAX, ex : OUTCOME_TRAFFIC, OUTCOME_ENGAGEMENT, OUTCOME_LEADS, " +
-          "OUTCOME_SALES, OUTCOME_AWARENESS, OUTCOME_APP_PROMOTION."
-      ),
-    status: z.enum(["ACTIVE", "PAUSED"]).default("PAUSED").describe("Statut initial."),
-    dailyBudget: z
-      .number()
-      .int()
-      .optional()
-      .describe("Budget quotidien en centimes de la devise du compte (ex: 1000 = 10,00)."),
-    lifetimeBudget: z.number().int().optional().describe("Budget total en centimes."),
-    adAccountId: z.string().optional().describe("ID du compte (sinon FACEBOOK_AD_ACCOUNT_ID)."),
-  },
-  async (args) => {
-    try {
-      return ok(await createCampaign(args));
-    } catch (e) {
-      return fail(e);
-    }
-  }
-);
-
-server.tool(
-  "facebook_update_campaign_status",
-  "Change le statut d'une campagne : ACTIVE (activer), PAUSED (mettre en pause), " +
-    "ARCHIVED ou DELETED.",
-  {
-    campaignId: z.string().describe("ID de la campagne."),
-    status: z.enum(["ACTIVE", "PAUSED", "ARCHIVED", "DELETED"]).describe("Nouveau statut."),
-  },
-  async ({ campaignId, status }) => {
-    try {
-      return ok(await updateCampaignStatus(campaignId, status));
-    } catch (e) {
-      return fail(e);
-    }
-  }
-);
-
-server.tool(
-  "facebook_get_insights",
-  "Récupère les performances d'une campagne, d'un ensemble de pubs ou d'une pub " +
-    "(impressions, portée, clics, dépenses, CPC, CPM, CTR).",
-  {
-    objectId: z.string().describe("ID de l'objet (campagne, adset ou ad)."),
-    datePreset: z
-      .string()
-      .default("last_30d")
-      .describe("Période : today, yesterday, last_7d, last_30d, this_month, maximum..."),
-  },
-  async ({ objectId, datePreset }) => {
-    try {
-      return ok(await getInsights(objectId, datePreset));
     } catch (e) {
       return fail(e);
     }
