@@ -15,6 +15,9 @@
 # Environment files
 /.env
 
+# Vidéos téléchargées depuis Telegram
+/downloads/
+
 # Angular CLI and build artefacts
 /.angular-cli.json
 /.ng/

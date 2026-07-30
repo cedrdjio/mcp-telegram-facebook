@@ -1,0 +1,39 @@
+{
+  "name": "mcp-telegram-facebook",
+  "version": "0.1.0",
+  "description": "Serveur MCP pour récupérer des vidéos Telegram, les reposter sur Facebook avec des descriptions personnalisées, et gérer un compte Facebook ainsi que ses campagnes publicitaires.",
+  "type": "module",
+  "bin": {
+    "mcp-telegram-facebook": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch",
+    "telegram:login": "node dist/scripts/telegram-login.js",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "telegram",
+    "facebook",
+    "ads",
+    "marketing-api"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "dotenv": "^16.4.5",
+    "telegram": "^2.22.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0"
+  }
+}
