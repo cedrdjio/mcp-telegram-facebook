@@ -20,12 +20,17 @@ const MCP_PATH = "/mcp";
 // Une session (= un transport) par client connecté, indexée par session-id.
 const transports: Record<string, StreamableHTTPServerTransport> = {};
 
-/** Vérifie le jeton Bearer. Retourne true si l'accès est autorisé. */
-function isAuthorized(req: IncomingMessage): boolean {
+/**
+ * Vérifie le jeton d'accès. Deux méthodes acceptées :
+ *  - en-tête  `Authorization: Bearer <token>`  (clients qui gèrent les headers)
+ *  - paramètre d'URL  `?key=<token>`  (Claude.ai, qui n'accepte qu'une URL)
+ */
+function isAuthorized(req: IncomingMessage, url: URL): boolean {
   if (!AUTH_TOKEN) return true; // pas de token configuré => ouvert (déconseillé en prod)
   const header = req.headers["authorization"] ?? "";
-  const expected = `Bearer ${AUTH_TOKEN}`;
-  return header === expected;
+  if (header === `Bearer ${AUTH_TOKEN}`) return true;
+  if (url.searchParams.get("key") === AUTH_TOKEN) return true;
+  return false;
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -53,7 +58,7 @@ const httpServer = createHttpServer(async (req, res) => {
     return sendJson(res, 404, { error: "Not found" });
   }
 
-  if (!isAuthorized(req)) {
+  if (!isAuthorized(req, url)) {
     return sendJson(res, 401, {
       jsonrpc: "2.0",
       error: { code: -32001, message: "Non autorisé : jeton Bearer manquant ou invalide." },
