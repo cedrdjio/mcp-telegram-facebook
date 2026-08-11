@@ -4,6 +4,13 @@
  * Implémente le transport « Streamable HTTP » du protocole MCP, protégé par un
  * jeton Bearer (variable d'environnement MCP_AUTH_TOKEN).
  *
+ * L'interface « Ajouter un connecteur personnalisé » de Claude.ai n'accepte que
+ * de l'OAuth (ID client / Secret client) — ni en-tête Authorization personnalisé,
+ * ni paramètre d'URL. On expose donc un mini serveur OAuth 2.0 (grant
+ * `client_credentials`) qui, une fois le client vérifié, délivre simplement le
+ * jeton MCP_AUTH_TOKEN existant : Claude.ai récupère ce jeton via /oauth/token
+ * puis l'envoie en `Authorization: Bearer` sur chaque requête MCP, comme avant.
+ *
  * Déployé typiquement sur Railway : la plateforme fournit la variable PORT.
  * URL à coller dans Claude : https://<votre-domaine>.up.railway.app/mcp
  */
@@ -15,6 +22,8 @@ import { createServer } from "./server.js";
 
 const PORT = Number(process.env.PORT ?? 3000);
 const AUTH_TOKEN = process.env.MCP_AUTH_TOKEN ?? "";
+const OAUTH_CLIENT_ID = process.env.MCP_OAUTH_CLIENT_ID ?? "";
+const OAUTH_CLIENT_SECRET = process.env.MCP_OAUTH_CLIENT_SECRET ?? "";
 const MCP_PATH = "/mcp";
 
 // Une session (= un transport) par client connecté, indexée par session-id.
@@ -47,20 +56,123 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
-/** Lit et parse le corps JSON d'une requête. */
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+/** Lit le corps brut d'une requête (texte). */
+async function readRawBody(req: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(chunk as Buffer);
-  const raw = Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+/** Lit et parse le corps JSON d'une requête. */
+async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+  const raw = await readRawBody(req);
   return raw ? JSON.parse(raw) : undefined;
+}
+
+/**
+ * Extrait client_id/client_secret d'une requête de token OAuth : soit via
+ * l'en-tête `Authorization: Basic ...` (client_secret_basic), soit via le
+ * corps de la requête (client_secret_post, en JSON ou x-www-form-urlencoded).
+ */
+function extractClientCredentials(
+  req: IncomingMessage,
+  bodyParams: URLSearchParams
+): { clientId?: string; clientSecret?: string } {
+  const authHeader = req.headers["authorization"];
+  if (typeof authHeader === "string" && authHeader.startsWith("Basic ")) {
+    const decoded = Buffer.from(authHeader.slice("Basic ".length), "base64").toString("utf8");
+    const sep = decoded.indexOf(":");
+    if (sep !== -1) {
+      return { clientId: decoded.slice(0, sep), clientSecret: decoded.slice(sep + 1) };
+    }
+  }
+  return {
+    clientId: bodyParams.get("client_id") ?? undefined,
+    clientSecret: bodyParams.get("client_secret") ?? undefined,
+  };
+}
+
+/**
+ * Endpoint `/oauth/token` (grant `client_credentials`) requis par le
+ * connecteur personnalisé de Claude.ai. Vérifie le client_id/secret puis
+ * délivre le jeton MCP_AUTH_TOKEN, déjà accepté par isAuthorized().
+ */
+async function handleOAuthToken(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!OAUTH_CLIENT_ID || !OAUTH_CLIENT_SECRET || !AUTH_TOKEN) {
+    return sendJson(res, 500, {
+      error: "server_error",
+      error_description: "OAuth non configuré : définissez MCP_OAUTH_CLIENT_ID, MCP_OAUTH_CLIENT_SECRET et MCP_AUTH_TOKEN.",
+    });
+  }
+
+  const raw = await readRawBody(req);
+  const contentType = String(req.headers["content-type"] ?? "");
+  let bodyParams: URLSearchParams;
+  if (contentType.includes("application/json")) {
+    try {
+      const json = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+      bodyParams = new URLSearchParams(
+        Object.fromEntries(Object.entries(json).map(([k, v]) => [k, String(v)]))
+      );
+    } catch {
+      bodyParams = new URLSearchParams();
+    }
+  } else {
+    bodyParams = new URLSearchParams(raw);
+  }
+
+  const grantType = bodyParams.get("grant_type");
+  if (grantType !== "client_credentials") {
+    return sendJson(res, 400, { error: "unsupported_grant_type" });
+  }
+
+  const { clientId, clientSecret } = extractClientCredentials(req, bodyParams);
+  if (!clientId || !clientSecret || !safeEqual(clientId, OAUTH_CLIENT_ID) || !safeEqual(clientSecret, OAUTH_CLIENT_SECRET)) {
+    return sendJson(res, 401, { error: "invalid_client" });
+  }
+
+  return sendJson(res, 200, {
+    access_token: AUTH_TOKEN,
+    token_type: "Bearer",
+    expires_in: 2592000, // 30 jours (jeton statique, pas de rotation réelle)
+  });
 }
 
 const httpServer = createHttpServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
+  const origin = `https://${req.headers.host}`;
 
   // Health check public (utile pour Railway).
   if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/health")) {
     return sendJson(res, 200, { status: "ok", service: "mcp-telegram-facebook" });
+  }
+
+  // --- Découverte OAuth (RFC 8414 / RFC 9728), lue par le connecteur Claude.ai ---
+  if (
+    req.method === "GET" &&
+    (url.pathname === "/.well-known/oauth-protected-resource" ||
+      url.pathname === "/.well-known/oauth-protected-resource/mcp")
+  ) {
+    return sendJson(res, 200, {
+      resource: `${origin}${MCP_PATH}`,
+      authorization_servers: [origin],
+    });
+  }
+  if (
+    req.method === "GET" &&
+    (url.pathname === "/.well-known/oauth-authorization-server" ||
+      url.pathname === "/.well-known/oauth-authorization-server/mcp")
+  ) {
+    return sendJson(res, 200, {
+      issuer: origin,
+      token_endpoint: `${origin}/oauth/token`,
+      response_types_supported: ["token"],
+      grant_types_supported: ["client_credentials"],
+      token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic"],
+    });
+  }
+  if (req.method === "POST" && url.pathname === "/oauth/token") {
+    return handleOAuthToken(req, res);
   }
 
   if (url.pathname !== MCP_PATH) {
@@ -68,6 +180,10 @@ const httpServer = createHttpServer(async (req, res) => {
   }
 
   if (!isAuthorized(req, url)) {
+    res.setHeader(
+      "WWW-Authenticate",
+      `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource"`
+    );
     return sendJson(res, 401, {
       jsonrpc: "2.0",
       error: { code: -32001, message: "Non autorisé : jeton Bearer manquant ou invalide." },
@@ -127,5 +243,10 @@ httpServer.listen(PORT, () => {
   console.log(`Serveur MCP telegram-facebook (HTTP) à l'écoute sur le port ${PORT}${MCP_PATH}`);
   if (!AUTH_TOKEN) {
     console.warn("⚠️  MCP_AUTH_TOKEN non défini : l'endpoint est PUBLIC. Définissez-le en production !");
+  }
+  if (!OAUTH_CLIENT_ID || !OAUTH_CLIENT_SECRET) {
+    console.warn(
+      "⚠️  MCP_OAUTH_CLIENT_ID / MCP_OAUTH_CLIENT_SECRET non définis : le connecteur Claude.ai (qui exige OAuth) ne pourra pas s'authentifier."
+    );
   }
 });

@@ -117,6 +117,24 @@ Redémarrez Claude Desktop : l'icône 🔌 doit lister les outils `telegram_*` e
 claude mcp add telegram-facebook -- node /CHEMIN/ABSOLU/mcp-telegram-facebook/dist/index.js
 ```
 
+### Claude.ai (web) — connecteur personnalisé
+
+Le serveur peut aussi tourner en HTTP (voir `src/http.ts`), déployé par exemple sur
+Railway. Le formulaire *« Ajouter un connecteur personnalisé »* de Claude.ai
+n'accepte que de l'**OAuth** (pas d'en-tête `Authorization` personnalisé, pas de
+paramètre d'URL) — le serveur expose donc un mini-endpoint OAuth 2.0
+(`client_credentials`) qui délivre le jeton `MCP_AUTH_TOKEN`.
+
+1. Définissez, en plus des autres variables, `MCP_OAUTH_CLIENT_ID` et
+   `MCP_OAUTH_CLIENT_SECRET` (valeurs aléatoires, voir `.env.example`).
+2. Sur **claude.ai → Paramètres → Connecteurs → Ajouter un connecteur personnalisé** :
+   - **URL du serveur MCP distant** : `https://<votre-domaine>/mcp`
+   - **Paramètres avancés → ID client OAuth** : valeur de `MCP_OAUTH_CLIENT_ID`
+   - **Paramètres avancés → Secret client OAuth** : valeur de `MCP_OAUTH_CLIENT_SECRET`
+3. Cliquez **Ajouter** puis **Connecter** : Claude appelle automatiquement
+   `/.well-known/oauth-authorization-server` puis `/oauth/token` pour récupérer
+   le jeton, et l'utilise ensuite en `Authorization: Bearer` sur `/mcp`.
+
 ---
 
 ## 5. Tester
