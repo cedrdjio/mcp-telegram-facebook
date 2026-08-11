@@ -8,7 +8,7 @@
  * URL à coller dans Claude : https://<votre-domaine>.up.railway.app/mcp
  */
 import { createServer as createHttpServer, IncomingMessage, ServerResponse } from "node:http";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { createServer } from "./server.js";
@@ -20,6 +20,14 @@ const MCP_PATH = "/mcp";
 // Une session (= un transport) par client connecté, indexée par session-id.
 const transports: Record<string, StreamableHTTPServerTransport> = {};
 
+/** Compare deux chaînes en temps constant (évite les attaques par timing sur le jeton). */
+function safeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
+}
+
 /**
  * Vérifie le jeton d'accès. Deux méthodes acceptées :
  *  - en-tête  `Authorization: Bearer <token>`  (clients qui gèrent les headers)
@@ -28,8 +36,9 @@ const transports: Record<string, StreamableHTTPServerTransport> = {};
 function isAuthorized(req: IncomingMessage, url: URL): boolean {
   if (!AUTH_TOKEN) return true; // pas de token configuré => ouvert (déconseillé en prod)
   const header = req.headers["authorization"] ?? "";
-  if (header === `Bearer ${AUTH_TOKEN}`) return true;
-  if (url.searchParams.get("key") === AUTH_TOKEN) return true;
+  if (typeof header === "string" && safeEqual(header, `Bearer ${AUTH_TOKEN}`)) return true;
+  const key = url.searchParams.get("key");
+  if (key && safeEqual(key, AUTH_TOKEN)) return true;
   return false;
 }
 

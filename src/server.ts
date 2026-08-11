@@ -127,10 +127,14 @@ export function createServer(): McpServer {
         .default("page_impressions,page_post_engagements,page_fans")
         .describe("Métriques séparées par des virgules."),
       period: z.enum(["day", "week", "days_28"]).default("day").describe("Période d'agrégation."),
+      pageAccessToken: z
+        .string()
+        .optional()
+        .describe("Page Access Token spécifique (sinon FACEBOOK_ACCESS_TOKEN)."),
     },
-    async ({ pageId, metrics, period }) => {
+    async ({ pageId, metrics, period, pageAccessToken }) => {
       try {
-        return ok(await getPageInsights(pageId, metrics, period));
+        return ok(await getPageInsights(pageId, metrics, period, pageAccessToken));
       } catch (e) {
         return fail(e);
       }

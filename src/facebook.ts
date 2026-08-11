@@ -13,13 +13,14 @@ async function graphRequest<T = unknown>(
   options: {
     method?: "GET" | "POST" | "DELETE";
     params?: Record<string, string | number | boolean | undefined>;
+    accessToken?: string;
   } = {}
 ): Promise<T> {
   requireFacebook();
   const url = new URL(`${GRAPH_BASE()}/${path.replace(/^\//, "")}`);
 
   // access_token toujours en query pour rester compatible GET/POST.
-  url.searchParams.set("access_token", config.facebook.accessToken);
+  url.searchParams.set("access_token", options.accessToken || config.facebook.accessToken);
   for (const [key, value] of Object.entries(options.params ?? {})) {
     if (value !== undefined) url.searchParams.set(key, String(value));
   }
@@ -54,9 +55,15 @@ export async function listPages(): Promise<unknown> {
   });
 }
 
-export async function getPageInsights(pageId: string, metrics: string, period = "day"): Promise<unknown> {
+export async function getPageInsights(
+  pageId: string,
+  metrics: string,
+  period = "day",
+  pageAccessToken?: string
+): Promise<unknown> {
   return graphRequest(`${pageId}/insights`, {
     params: { metric: metrics, period },
+    accessToken: pageAccessToken,
   });
 }
 
