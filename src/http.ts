@@ -23,9 +23,11 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { createServer } from "./server.js";
 
 const PORT = Number(process.env.PORT ?? 3000);
-const AUTH_TOKEN = process.env.MCP_AUTH_TOKEN ?? "";
-const OAUTH_CLIENT_ID = process.env.MCP_OAUTH_CLIENT_ID ?? "";
-const OAUTH_CLIENT_SECRET = process.env.MCP_OAUTH_CLIENT_SECRET ?? "";
+// .trim() : tolère un espace ou un retour à la ligne parasite copié-collé dans
+// les variables d'environnement (Railway, etc.), sinon la comparaison stricte échoue.
+const AUTH_TOKEN = (process.env.MCP_AUTH_TOKEN ?? "").trim();
+const OAUTH_CLIENT_ID = (process.env.MCP_OAUTH_CLIENT_ID ?? "").trim();
+const OAUTH_CLIENT_SECRET = (process.env.MCP_OAUTH_CLIENT_SECRET ?? "").trim();
 const MCP_PATH = "/mcp";
 
 // Une session (= un transport) par client connecté, indexée par session-id.
@@ -96,12 +98,12 @@ function extractClientCredentials(
     const decoded = Buffer.from(authHeader.slice("Basic ".length), "base64").toString("utf8");
     const sep = decoded.indexOf(":");
     if (sep !== -1) {
-      return { clientId: decoded.slice(0, sep), clientSecret: decoded.slice(sep + 1) };
+      return { clientId: decoded.slice(0, sep).trim(), clientSecret: decoded.slice(sep + 1).trim() };
     }
   }
   return {
-    clientId: bodyParams.get("client_id") ?? undefined,
-    clientSecret: bodyParams.get("client_secret") ?? undefined,
+    clientId: bodyParams.get("client_id")?.trim(),
+    clientSecret: bodyParams.get("client_secret")?.trim(),
   };
 }
 
@@ -113,7 +115,7 @@ function extractClientCredentials(
  */
 function handleAuthorize(req: IncomingMessage, res: ServerResponse, url: URL): void {
   const responseType = url.searchParams.get("response_type");
-  const clientId = url.searchParams.get("client_id") ?? "";
+  const clientId = (url.searchParams.get("client_id") ?? "").trim();
   const redirectUri = url.searchParams.get("redirect_uri");
   const state = url.searchParams.get("state");
   const codeChallenge = url.searchParams.get("code_challenge") ?? undefined;
@@ -129,8 +131,12 @@ function handleAuthorize(req: IncomingMessage, res: ServerResponse, url: URL): v
   } catch {
     return sendJson(res, 400, { error: "invalid_request", error_description: "redirect_uri invalide." });
   }
+  if (state) redirectUrl.searchParams.set("state", state);
 
   if (!OAUTH_CLIENT_ID || !safeEqual(clientId, OAUTH_CLIENT_ID)) {
+    console.warn(
+      `/authorize: client_id refusé (reçu ${clientId.length} car., attendu ${OAUTH_CLIENT_ID.length} car.)`
+    );
     redirectUrl.searchParams.set("error", "unauthorized_client");
     res.writeHead(302, { Location: redirectUrl.toString() });
     res.end();
@@ -138,7 +144,6 @@ function handleAuthorize(req: IncomingMessage, res: ServerResponse, url: URL): v
   }
   if (responseType !== "code") {
     redirectUrl.searchParams.set("error", "unsupported_response_type");
-    if (state) redirectUrl.searchParams.set("state", state);
     res.writeHead(302, { Location: redirectUrl.toString() });
     res.end();
     return;
