@@ -6,16 +6,18 @@
  *
  * L'interface « Ajouter un connecteur personnalisé » de Claude.ai n'accepte que
  * de l'OAuth (ID client / Secret client) — ni en-tête Authorization personnalisé,
- * ni paramètre d'URL. On expose donc un mini serveur OAuth 2.0 (grant
- * `client_credentials`) qui, une fois le client vérifié, délivre simplement le
- * jeton MCP_AUTH_TOKEN existant : Claude.ai récupère ce jeton via /oauth/token
- * puis l'envoie en `Authorization: Bearer` sur chaque requête MCP, comme avant.
+ * ni paramètre d'URL. Claude effectue le flux standard « Authorization Code »
+ * (+ PKCE) : redirection navigateur vers /authorize, puis échange du code
+ * contre un jeton sur /oauth/token. Le client (ID/secret) est pré-enregistré
+ * via les variables d'environnement — pas de Dynamic Client Registration.
+ * Une fois le code validé, le jeton délivré est simplement MCP_AUTH_TOKEN,
+ * déjà accepté par isAuthorized() sur /mcp.
  *
  * Déployé typiquement sur Railway : la plateforme fournit la variable PORT.
  * URL à coller dans Claude : https://<votre-domaine>.up.railway.app/mcp
  */
 import { createServer as createHttpServer, IncomingMessage, ServerResponse } from "node:http";
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID, randomBytes, createHash, timingSafeEqual } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { createServer } from "./server.js";
@@ -28,6 +30,17 @@ const MCP_PATH = "/mcp";
 
 // Une session (= un transport) par client connecté, indexée par session-id.
 const transports: Record<string, StreamableHTTPServerTransport> = {};
+
+interface AuthCodeEntry {
+  clientId: string;
+  redirectUri: string;
+  codeChallenge?: string;
+  codeChallengeMethod?: string;
+  expiresAt: number;
+}
+// Codes d'autorisation à usage unique, en mémoire (durée de vie : 5 minutes).
+const authCodes = new Map<string, AuthCodeEntry>();
+const AUTH_CODE_TTL_MS = 5 * 60 * 1000;
 
 /** Compare deux chaînes en temps constant (évite les attaques par timing sur le jeton). */
 function safeEqual(a: string, b: string): boolean {
@@ -93,9 +106,66 @@ function extractClientCredentials(
 }
 
 /**
- * Endpoint `/oauth/token` (grant `client_credentials`) requis par le
- * connecteur personnalisé de Claude.ai. Vérifie le client_id/secret puis
- * délivre le jeton MCP_AUTH_TOKEN, déjà accepté par isAuthorized().
+ * Endpoint `GET /authorize` : première étape du flux « Authorization Code ».
+ * Usage strictement personnel (un seul utilisateur, vous) : le client_id est
+ * vérifié, mais il n'y a pas d'écran de consentement — on redirige
+ * directement vers redirect_uri avec un code à usage unique.
+ */
+function handleAuthorize(req: IncomingMessage, res: ServerResponse, url: URL): void {
+  const responseType = url.searchParams.get("response_type");
+  const clientId = url.searchParams.get("client_id") ?? "";
+  const redirectUri = url.searchParams.get("redirect_uri");
+  const state = url.searchParams.get("state");
+  const codeChallenge = url.searchParams.get("code_challenge") ?? undefined;
+  const codeChallengeMethod = url.searchParams.get("code_challenge_method") ?? undefined;
+
+  if (!redirectUri) {
+    return sendJson(res, 400, { error: "invalid_request", error_description: "redirect_uri manquant." });
+  }
+
+  let redirectUrl: URL;
+  try {
+    redirectUrl = new URL(redirectUri);
+  } catch {
+    return sendJson(res, 400, { error: "invalid_request", error_description: "redirect_uri invalide." });
+  }
+
+  if (!OAUTH_CLIENT_ID || !safeEqual(clientId, OAUTH_CLIENT_ID)) {
+    redirectUrl.searchParams.set("error", "unauthorized_client");
+    res.writeHead(302, { Location: redirectUrl.toString() });
+    res.end();
+    return;
+  }
+  if (responseType !== "code") {
+    redirectUrl.searchParams.set("error", "unsupported_response_type");
+    if (state) redirectUrl.searchParams.set("state", state);
+    res.writeHead(302, { Location: redirectUrl.toString() });
+    res.end();
+    return;
+  }
+
+  const code = randomBytes(24).toString("base64url");
+  authCodes.set(code, {
+    clientId,
+    redirectUri,
+    codeChallenge,
+    codeChallengeMethod,
+    expiresAt: Date.now() + AUTH_CODE_TTL_MS,
+  });
+
+  redirectUrl.searchParams.set("code", code);
+  if (state) redirectUrl.searchParams.set("state", state);
+  res.writeHead(302, { Location: redirectUrl.toString() });
+  res.end();
+}
+
+/**
+ * Endpoint `POST /oauth/token`, requis par le connecteur personnalisé de
+ * Claude.ai. Gère `authorization_code` (flux réel utilisé par Claude.ai, avec
+ * vérification PKCE si présente) et `client_credentials` (pour d'autres
+ * clients machine-à-machine). Dans les deux cas, une fois le client/code
+ * validé, délivre le jeton MCP_AUTH_TOKEN existant, déjà accepté par
+ * isAuthorized() sur /mcp.
  */
 async function handleOAuthToken(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (!OAUTH_CLIENT_ID || !OAUTH_CLIENT_SECRET || !AUTH_TOKEN) {
@@ -122,20 +192,51 @@ async function handleOAuthToken(req: IncomingMessage, res: ServerResponse): Prom
   }
 
   const grantType = bodyParams.get("grant_type");
-  if (grantType !== "client_credentials") {
-    return sendJson(res, 400, { error: "unsupported_grant_type" });
-  }
-
   const { clientId, clientSecret } = extractClientCredentials(req, bodyParams);
   if (!clientId || !clientSecret || !safeEqual(clientId, OAUTH_CLIENT_ID) || !safeEqual(clientSecret, OAUTH_CLIENT_SECRET)) {
     return sendJson(res, 401, { error: "invalid_client" });
   }
 
-  return sendJson(res, 200, {
-    access_token: AUTH_TOKEN,
-    token_type: "Bearer",
-    expires_in: 2592000, // 30 jours (jeton statique, pas de rotation réelle)
-  });
+  if (grantType === "authorization_code") {
+    const code = bodyParams.get("code") ?? "";
+    const redirectUri = bodyParams.get("redirect_uri") ?? "";
+    const codeVerifier = bodyParams.get("code_verifier");
+
+    const entry = authCodes.get(code);
+    authCodes.delete(code); // usage unique, qu'il soit valide ou non
+
+    if (!entry || entry.expiresAt < Date.now()) {
+      return sendJson(res, 400, { error: "invalid_grant", error_description: "Code expiré ou inconnu." });
+    }
+    if (entry.redirectUri !== redirectUri) {
+      return sendJson(res, 400, { error: "invalid_grant", error_description: "redirect_uri ne correspond pas." });
+    }
+    if (entry.codeChallenge) {
+      const expected =
+        entry.codeChallengeMethod === "plain"
+          ? codeVerifier ?? ""
+          : createHash("sha256").update(codeVerifier ?? "").digest("base64url");
+      if (!codeVerifier || !safeEqual(expected, entry.codeChallenge)) {
+        return sendJson(res, 400, { error: "invalid_grant", error_description: "code_verifier invalide (PKCE)." });
+      }
+    }
+
+    return sendJson(res, 200, {
+      access_token: AUTH_TOKEN,
+      token_type: "Bearer",
+      expires_in: 31536000, // 1 an (jeton statique, pas de rotation réelle)
+    });
+  }
+
+  if (grantType === "client_credentials") {
+    return sendJson(res, 200, {
+      access_token: AUTH_TOKEN,
+      token_type: "Bearer",
+      expires_in: 31536000,
+    });
+  }
+
+  return sendJson(res, 400, { error: "unsupported_grant_type" });
 }
 
 const httpServer = createHttpServer(async (req, res) => {
@@ -165,11 +266,16 @@ const httpServer = createHttpServer(async (req, res) => {
   ) {
     return sendJson(res, 200, {
       issuer: origin,
+      authorization_endpoint: `${origin}/authorize`,
       token_endpoint: `${origin}/oauth/token`,
-      response_types_supported: ["token"],
-      grant_types_supported: ["client_credentials"],
+      response_types_supported: ["code"],
+      grant_types_supported: ["authorization_code", "client_credentials"],
+      code_challenge_methods_supported: ["S256", "plain"],
       token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic"],
     });
+  }
+  if (req.method === "GET" && url.pathname === "/authorize") {
+    return handleAuthorize(req, res, url);
   }
   if (req.method === "POST" && url.pathname === "/oauth/token") {
     return handleOAuthToken(req, res);
