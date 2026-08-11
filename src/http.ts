@@ -326,9 +326,14 @@ const httpServer = createHttpServer(async (req, res) => {
       }
 
       if (!transport) {
-        return sendJson(res, 400, {
+        // 404 (et non 400) : c'est le code que la spec MCP Streamable HTTP exige
+        // pour signaler une session invalide/expirée, afin que le client sache
+        // qu'il doit se ré-initialiser automatiquement (sans ça, un client qui
+        // garde un ancien mcp-session-id — ex. après un redéploiement qui a
+        // vidé la mémoire du serveur — reste bloqué indéfiniment).
+        return sendJson(res, 404, {
           jsonrpc: "2.0",
-          error: { code: -32000, message: "Session inconnue. Envoyez d'abord une requête initialize." },
+          error: { code: -32001, message: "Session inconnue ou expirée. Envoyez une nouvelle requête initialize." },
           id: null,
         });
       }
@@ -339,7 +344,7 @@ const httpServer = createHttpServer(async (req, res) => {
     // --- GET : flux SSE serveur -> client / DELETE : fin de session ---
     if (req.method === "GET" || req.method === "DELETE") {
       const transport = sessionId ? transports[sessionId] : undefined;
-      if (!transport) return sendJson(res, 400, { error: "Session inconnue." });
+      if (!transport) return sendJson(res, 404, { error: "Session inconnue ou expirée." });
       return transport.handleRequest(req, res);
     }
 
