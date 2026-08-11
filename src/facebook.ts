@@ -49,6 +49,17 @@ async function graphRequest<T = unknown>(
 
 /* ----------------------------- Pages ----------------------------- */
 
+/** Résout la Page cible : argument explicite, sinon FACEBOOK_PAGE_ID. */
+function requirePageId(pageId?: string): string {
+  const resolved = pageId || config.facebook.pageId;
+  if (!resolved) {
+    throw new Error(
+      "Aucune Page cible : passez `pageId` ou définissez FACEBOOK_PAGE_ID dans le .env."
+    );
+  }
+  return resolved;
+}
+
 export async function listPages(): Promise<unknown> {
   return graphRequest("me/accounts", {
     params: { fields: "id,name,category,access_token,tasks" },
@@ -114,6 +125,170 @@ export async function postVideoToPage(args: {
     throw new Error(`Échec de la publication vidéo (${res.status}): ${err?.message ?? text}`);
   }
   return data;
+}
+
+/**
+ * Récupère le `post_id` et le permalien d'une vidéo publiée.
+ *
+ * L'upload sur `/videos` ne renvoie que l'ID de la vidéo ; le `post_id` est
+ * l'identifiant de la publication telle qu'elle apparaît dans le fil.
+ */
+export async function getVideoPostInfo(args: {
+  videoId: string;
+  pageAccessToken?: string;
+}): Promise<{ id: string; post_id?: string; permalink_url?: string }> {
+  return graphRequest(`${args.videoId}`, {
+    params: { fields: "id,post_id,permalink_url" },
+    accessToken: args.pageAccessToken,
+  });
+}
+
+/* --------------------- Lecture des publications --------------------- */
+
+/**
+ * Liste les publications d'une Page (y compris les vidéos), avec leur message,
+ * leur date et un lien permanent. Sert à savoir ce qui est déjà en ligne avant
+ * de republier, et à récupérer les `postId` nécessaires aux commentaires.
+ */
+export async function listPagePosts(args: {
+  pageId?: string;
+  limit?: number;
+  pageAccessToken?: string;
+}): Promise<unknown> {
+  const pageId = requirePageId(args.pageId);
+  return graphRequest(`${pageId}/posts`, {
+    params: {
+      fields:
+        "id,created_time,message,permalink_url,status_type,is_published," +
+        "attachments{media_type,title,description},comments.summary(true).limit(0)",
+      limit: args.limit ?? 25,
+    },
+    accessToken: args.pageAccessToken,
+  });
+}
+
+/** Liste les vidéos publiées sur une Page (titre, description, permalien). */
+export async function listPageVideos(args: {
+  pageId?: string;
+  limit?: number;
+  pageAccessToken?: string;
+}): Promise<unknown> {
+  const pageId = requirePageId(args.pageId);
+  return graphRequest(`${pageId}/videos`, {
+    params: {
+      fields: "id,title,description,created_time,permalink_url,length,post_id",
+      limit: args.limit ?? 25,
+    },
+    accessToken: args.pageAccessToken,
+  });
+}
+
+/** Récupère les commentaires d'une publication. */
+export async function listPostComments(args: {
+  postId: string;
+  limit?: number;
+  pageAccessToken?: string;
+}): Promise<unknown> {
+  return graphRequest(`${args.postId}/comments`, {
+    params: {
+      fields: "id,message,created_time,from,like_count,comment_count",
+      order: "chronological",
+      limit: args.limit ?? 25,
+    },
+    accessToken: args.pageAccessToken,
+  });
+}
+
+/* ------------------------- Écriture / édition ------------------------- */
+
+/**
+ * Publie un commentaire sous une publication (ou en réponse à un commentaire,
+ * en passant l'ID du commentaire parent comme `postId`).
+ */
+export async function postComment(args: {
+  postId: string;
+  message: string;
+  pageAccessToken?: string;
+}): Promise<unknown> {
+  return graphRequest(`${args.postId}/comments`, {
+    method: "POST",
+    params: { message: args.message },
+    accessToken: args.pageAccessToken,
+  });
+}
+
+/**
+ * Épingle (ou désépingle) un commentaire en haut du fil d'une publication.
+ *
+ * Note : l'épinglage de commentaire n'est pas disponible sur toutes les Pages ni
+ * sur tous les types de publication. Si la Graph API refuse l'opération, l'erreur
+ * renvoyée est celle de Facebook — le commentaire reste publié, seul l'épinglage
+ * échoue, et il peut alors être épinglé à la main depuis la Page.
+ */
+export async function pinComment(args: {
+  commentId: string;
+  pinned?: boolean;
+  pageAccessToken?: string;
+}): Promise<unknown> {
+  return graphRequest(`${args.commentId}`, {
+    method: "POST",
+    params: { is_pinned: args.pinned ?? true },
+    accessToken: args.pageAccessToken,
+  });
+}
+
+/** Modifie le texte d'un commentaire déjà publié. */
+export async function updateComment(args: {
+  commentId: string;
+  message: string;
+  pageAccessToken?: string;
+}): Promise<unknown> {
+  return graphRequest(`${args.commentId}`, {
+    method: "POST",
+    params: { message: args.message },
+    accessToken: args.pageAccessToken,
+  });
+}
+
+/** Supprime un commentaire. */
+export async function deleteComment(args: {
+  commentId: string;
+  pageAccessToken?: string;
+}): Promise<unknown> {
+  return graphRequest(`${args.commentId}`, {
+    method: "DELETE",
+    accessToken: args.pageAccessToken,
+  });
+}
+
+/**
+ * Réécrit la description d'une vidéo déjà publiée.
+ *
+ * Permet de corriger une légende sans supprimer la publication : les vues,
+ * commentaires et partages déjà accumulés sont conservés.
+ */
+export async function updateVideoDescription(args: {
+  videoId: string;
+  description: string;
+  title?: string;
+  pageAccessToken?: string;
+}): Promise<unknown> {
+  return graphRequest(`${args.videoId}`, {
+    method: "POST",
+    params: { description: args.description, title: args.title },
+    accessToken: args.pageAccessToken,
+  });
+}
+
+/** Supprime une publication (ou une vidéo) d'une Page. */
+export async function deletePost(args: {
+  postId: string;
+  pageAccessToken?: string;
+}): Promise<unknown> {
+  return graphRequest(`${args.postId}`, {
+    method: "DELETE",
+    accessToken: args.pageAccessToken,
+  });
 }
 
 /** Publie un simple post texte (avec lien optionnel) sur une Page. */

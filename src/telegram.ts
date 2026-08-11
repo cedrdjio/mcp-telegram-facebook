@@ -1,6 +1,6 @@
 import { TelegramClient, Api } from "telegram";
 import { StringSession } from "telegram/sessions/index.js";
-import { mkdir } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { config, requireTelegram } from "./config.js";
 
@@ -115,6 +115,14 @@ export async function downloadVideo(chat: string, messageId: number): Promise<{
 
   await mkdir(config.downloadDir, { recursive: true });
   const outPath = join(config.downloadDir, `${chatId}_${messageId}_${video.fileName}`);
+
+  // Si la vidéo est déjà sur le disque et complète, on évite un second
+  // téléchargement : le même fichier sert à l'analyse d'images puis à la
+  // publication Facebook.
+  const existing = await stat(outPath).catch(() => null);
+  if (existing?.isFile() && existing.size === video.sizeBytes && video.sizeBytes > 0) {
+    return { path: outPath, video };
+  }
 
   const buffer = await tg.downloadMedia(message, {});
   if (!buffer) throw new Error("Le téléchargement de la vidéo a échoué (contenu vide).");

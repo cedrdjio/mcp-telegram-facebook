@@ -16,11 +16,21 @@ Serveur **MCP** (Model Context Protocol) qui permet à Claude de :
 |-------|------|
 | `telegram_list_videos` | Liste les vidéos récentes d'un chat/canal Telegram |
 | `telegram_download_video` | Télécharge une vidéo sur le disque local |
+| `telegram_video_frames` | **Extrait des images de la vidéo et les renvoie visibles** — permet de voir le contenu avant d'écrire la description |
 | `facebook_list_pages` | Liste les Pages gérées + leurs tokens |
 | `facebook_post_video` | Publie une vidéo locale sur une Page (titre + description) |
 | `facebook_post_feed` | Publie un post texte (avec lien) sur une Page |
+| `facebook_list_posts` | Liste les publications d'une Page (message, permalien, nb de commentaires) |
+| `facebook_list_videos` | Liste les vidéos publiées (titre, description, `post_id`) |
+| `facebook_update_video` | Réécrit la description d'une vidéo en ligne, sans perdre vues ni commentaires |
+| `facebook_delete_post` | Supprime une publication ou une vidéo |
+| `facebook_list_comments` | Liste les commentaires d'une publication |
+| `facebook_post_comment` | **Commente au nom de la Page**, avec épinglage optionnel |
+| `facebook_pin_comment` | Épingle / désépingle un commentaire |
+| `facebook_update_comment` | Modifie un commentaire publié |
+| `facebook_delete_comment` | Supprime un commentaire |
 | `facebook_page_insights` | Statistiques d'une Page |
-| `repost_telegram_to_facebook` | **Workflow complet** : Telegram → Facebook en une étape |
+| `repost_telegram_to_facebook` | **Workflow complet** : Telegram → Facebook + commentaire épinglé en une étape |
 
 ---
 
