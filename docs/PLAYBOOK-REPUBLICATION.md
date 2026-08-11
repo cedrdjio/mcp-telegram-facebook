@@ -27,13 +27,25 @@ Récupérer le Page Access Token via `facebook_list_pages` et le passer en
 
 ## 2. La méthode, vidéo par vidéo
 
-1. `telegram_video_frames` — `count: 6`. Regarder les images : sujet, texte à
-   l'écran, ce qui est montré (une interface ? un visage qui parle ? un
-   résultat ?).
+0. `telegram_download_video` **d'abord**. Sans ce préchargement,
+   `telegram_video_frames` dépasse le délai de 60 s du client MCP : il télécharge
+   et décode dans le même appel.
+1. `telegram_video_frames` — `count: 3`, `width: 240`. Regarder les images :
+   sujet, texte à l'écran, ce qui est montré (une interface ? un visage qui
+   parle ? un résultat ?).
+   ⚠️ `count: 6` à 420 px dépasse la taille de réponse acceptée et la connexion
+   se ferme. 3 images à 240 px passent et suffisent largement à comprendre.
 2. Rédiger la description à partir de ce qu'on a réellement vu (§3).
 3. `repost_telegram_to_facebook` avec `description`, `title` et `comment`
    (le commentaire 1, épinglé automatiquement).
 4. `facebook_post_comment` pour les commentaires 2 et 3, sur le même `postId`.
+
+Pour commenter une vidéo, l'`id` renvoyé par la publication suffit — inutile de
+le préfixer par l'ID de la Page.
+
+Facebook encode la vidéo de façon asynchrone : le commentaire posté dans la
+foulée échoue parfois (`Object with ID ... does not exist`). Ce n'est pas une
+erreur de permission — reposter le commentaire un peu plus tard suffit.
 
 Publier **par lots de 5**, puis marquer une pause et rendre compte avant de
 continuer.
