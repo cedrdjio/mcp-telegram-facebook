@@ -47,8 +47,13 @@ Facebook encode la vidéo de façon asynchrone : le commentaire posté dans la
 foulée échoue parfois (`Object with ID ... does not exist`). Ce n'est pas une
 erreur de permission — reposter le commentaire un peu plus tard suffit.
 
-Publier **par lots de 5**, puis marquer une pause et rendre compte avant de
+Publier **par lots de 5 à 7**, puis marquer une pause et rendre compte avant de
 continuer.
+
+### État du lot du 11 août
+
+Les 27 vidéos (80889 → 80915) sont publiées, chacune avec une description
+propre à son contenu et les trois commentaires, le premier épinglé.
 
 ---
 
