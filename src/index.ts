@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { createServer, IncomingMessage, ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { createServer } from "node:http";
 
 import { listVideos as listTelegramVideos, downloadVideo } from "./telegram.js";
 import {
@@ -242,28 +244,78 @@ server.tool(
 
 /* ============================ Démarrage ============================ */
 
-async function main() {
-  // Railway attend un port HTTP pour considérer le service comme sain.
-  // Le transport MCP reste en stdio pour conserver la compatibilité Claude/Desktop.
-  const port = Number(process.env.PORT ?? 3000);
-  const healthServer = createServer((req, res) => {
-    if (req.url === "/health" || req.url === "/") {
+async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) chunks.push(Buffer.from(chunk));
+  const raw = Buffer.concat(chunks).toString("utf8");
+  if (!raw.trim()) return undefined;
+  try { return JSON.parse(raw); }
+  catch { throw new Error("Corps JSON invalide"); }
+}
+
+async function startHttpServer() {
+  const sessions = new Map<string, StreamableHTTPServerTransport>();
+
+  const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    // Health check Railway.
+    if (req.method === "GET" && (req.url === "/" || req.url === "/health")) {
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ status: "ok", service: "mcp-telegram-facebook" }));
+      res.end(JSON.stringify({ ok: true, service: "mcp-telegram-facebook" }));
       return;
     }
-    res.writeHead(404, { "content-type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify({ error: "Not found" }));
+
+    if (req.url !== "/mcp") {
+      res.writeHead(404, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ error: "Not found" }));
+      return;
+    }
+
+    try {
+      const sessionId = req.headers["mcp-session-id"] as string | undefined;
+      let transport = sessionId ? sessions.get(sessionId) : undefined;
+
+      if (!transport) {
+        if (req.method !== "POST") {
+          res.writeHead(400, { "content-type": "application/json; charset=utf-8" });
+          res.end(JSON.stringify({ error: "Session MCP absente. Envoyez initialize en POST." }));
+          return;
+        }
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (id) => { sessions.set(id, transport!); },
+        });
+        transport.onclose = () => {
+          const id = transport?.sessionId;
+          if (id) sessions.delete(id);
+        };
+        await server.connect(transport);
+      }
+
+      const body = req.method === "POST" ? await readJsonBody(req) : undefined;
+      await transport.handleRequest(req, res, body);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!res.headersSent) res.writeHead(500, { "content-type": "application/json; charset=utf-8" });
+      if (!res.writableEnded) res.end(JSON.stringify({ error: message }));
+      console.error("MCP HTTP error:", message);
+    }
   });
 
-  healthServer.listen(port, "0.0.0.0", () => {
-    console.error(`Health server listening on port ${port}.`);
+  const port = Number(process.env.PORT || 3000);
+  httpServer.listen(port, "0.0.0.0", () => {
+    console.error(`Serveur MCP telegram-facebook HTTP démarré sur le port ${port}.`);
   });
+}
 
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  // Les logs vont sur stderr pour ne pas polluer le canal stdio (protocole MCP).
-  console.error("Serveur MCP telegram-facebook démarré (stdio).");
+async function main() {
+  // Railway utilise HTTP; le mode stdio reste disponible localement avec MCP_TRANSPORT=stdio.
+  if ((process.env.MCP_TRANSPORT || "http").toLowerCase() === "stdio") {
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    console.error("Serveur MCP telegram-facebook démarré (stdio).");
+  } else {
+    await startHttpServer();
+  }
 }
 
 main().catch((err) => {
