@@ -166,27 +166,33 @@ Une interface web s'ouvre : vous pouvez appeler chaque outil manuellement.
 
 MIT
 
+## Outils avancés ajoutés
 
-## Permissions Facebook
+Le serveur expose désormais :
+- `facebook_graph_request` : appel Graph générique GET/POST/DELETE
+- `facebook_get_object`, `facebook_create_object`, `facebook_update_object`, `facebook_delete_object`
+- `facebook_list_edge`
+- `facebook_ads_insights`
+- `facebook_validate_token`
+- `facebook_list_ad_accounts`
+- `facebook_list_campaigns`
+- `facebook_list_adsets`
+- `facebook_list_ads`
+- `facebook_list_adcreatives`
+- `facebook_list_custom_audiences`
+- `facebook_list_pixels`
 
-Le serveur utilise les variables d’environnement Railway suivantes :
+Ces outils couvrent la gestion Pages, publications, vidéos, commentaires et une grande partie de la Marketing API : campagnes, ensembles de publicités, annonces, créations, audiences, pixels/datasets et statistiques.
 
-- `FACEBOOK_ACCESS_TOKEN` : **Page Access Token** de la Page cible ;
-- `FACEBOOK_PAGE_ID` : identifiant de la Page ;
-- `FACEBOOK_GRAPH_VERSION` : version Graph API, par défaut `v21.0`.
+### Attention sécurité
 
-Pour les opérations de lecture, modification de Reels et commentaires, le token doit
-avoir au minimum les autorisations `pages_show_list`, `pages_read_engagement`,
-`pages_read_user_content`, `pages_manage_posts`, `pages_manage_engagement`,
-`pages_manage_metadata` et `read_insights`. Le code ne tente pas de demander ou
-d’accorder automatiquement ces permissions : elles doivent être accordées dans Meta.
+Les opérations publicitaires qui créent, modifient, activent, mettent en pause ou suppriment des campagnes peuvent dépenser de l'argent. Testez d'abord avec `status=PAUSED`, vérifiez les IDs et ne fournissez jamais un token dans les logs ou captures.
 
-Pour modifier un Reel, utilisez son `videoId` et, si disponible, son `postId`/`post_id`.
-Le serveur tente l’objet vidéo puis utilise le post associé comme solution de repli
-si Facebook renvoie une erreur de permission sur l’objet vidéo.
+## Moteur universel Graph API
 
-### Railway
+Outils supplémentaires:
+- `facebook_universal_request`: GET/POST/DELETE/PUT/PATCH, paramètres dynamiques, pagination, dry-run et confirmation.
+- `facebook_analyze_request`: analyse de risque sans exécution.
+- `facebook_diagnose`: diagnostic du token, Page, version et vidéos.
 
-Aucune valeur n’est codée en dur : les variables existantes sont lues via
-`process.env`. Après modification des variables dans Railway, redéployez ou
-redémarrez le service pour charger le nouveau token.
+Les opérations sensibles retournent `confirmationRequired: true`. Relancer ensuite avec `confirm: true`. Ne jamais fournir un token dans les paramètres: le MCP utilise `FACEBOOK_ACCESS_TOKEN` et le transmet dans l'en-tête Authorization.

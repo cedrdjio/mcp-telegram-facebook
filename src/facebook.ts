@@ -11,23 +11,27 @@ interface GraphError {
 async function graphRequest<T = unknown>(
   path: string,
   options: {
-    method?: "GET" | "POST" | "DELETE";
+    method?: UniversalMethod;
     params?: Record<string, string | number | boolean | undefined>;
-    accessToken?: string;
   } = {}
 ): Promise<T> {
   requireFacebook();
+  const method = options.method ?? "GET";
   const url = new URL(`${GRAPH_BASE()}/${path.replace(/^\//, "")}`);
+  const params = Object.entries(options.params ?? {}).filter(([, value]) => value !== undefined);
+  const headers: Record<string, string> = { Accept: "application/json" };
+  let body: URLSearchParams | undefined;
 
-  // access_token toujours en query pour rester compatible GET/POST.
-  url.searchParams.set("access_token", options.accessToken || config.facebook.accessToken);
-  for (const [key, value] of Object.entries(options.params ?? {})) {
-    if (value !== undefined) url.searchParams.set(key, String(value));
+  if (method === "GET") {
+    for (const [key, value] of params) url.searchParams.set(key, String(value));
+  } else {
+    body = new URLSearchParams();
+    for (const [key, value] of params) body.set(key, String(value));
+    headers["Content-Type"] = "application/x-www-form-urlencoded";
   }
+  headers.Authorization = `Bearer ${config.facebook.accessToken}`;
 
-  const res = await fetch(url, {
-    method: options.method ?? "GET",
-  });
+  const res = await fetch(url, { method, headers, body });
 
   const text = await res.text();
   let data: unknown;
@@ -134,117 +138,199 @@ export async function postToPageFeed(args: {
   return data;
 }
 
-/** Liste les vidéos/Reels publiés sur une Page. */
-export async function listPageVideos(args: {
-  pageId?: string;
-  limit?: number;
-  pageAccessToken?: string;
-} = {}): Promise<unknown> {
-  const pageId = args.pageId || config.facebook.pageId;
-  if (!pageId) throw new Error("Aucune Page cible : passez `pageId` ou définissez FACEBOOK_PAGE_ID dans le .env.");
-  const token = args.pageAccessToken || config.facebook.accessToken;
-  return graphRequest(`${pageId}/videos`, {
-    accessToken: token,
-    params: {
-      fields: "id,title,description,created_time,permalink_url,length,post_id",
-      limit: args.limit ?? 25,
-    },
-  });
+
+/* ------------------------- Vidéos / commentaires ------------------------- */
+export async function listVideos(pageId?: string): Promise<unknown> {
+  const id = pageId || config.facebook.pageId;
+  if (!id) throw new Error("Aucune Page cible.");
+  return graphRequest(`${id}/videos`, { params: { fields: "id,title,description,created_time,permalink_url,length,post_id,is_published,status" } });
 }
 
-/** Modifie la description d’une vidéo/Reel existant.
- *
- * Facebook expose parfois le Reel via son videoId et parfois via le post_id.
- * On tente d’abord l’objet vidéo. Si Facebook refuse cet objet avec une erreur
- * de permission et qu’un postId est fourni, on tente alors la publication liée.
- */
-export async function updateVideo(args: {
-  videoId: string;
-  description: string;
-  title?: string;
-  postId?: string;
-  pageAccessToken?: string;
-}): Promise<unknown> {
-  const token = args.pageAccessToken || config.facebook.accessToken;
-
-  async function updateObject(objectId: string, params: Record<string, string>) {
-    return graphRequest(objectId, {
-      method: "POST",
-      accessToken: token,
-      params,
-    });
-  }
-
+export async function updateVideo(videoId: string, description: string, title?: string): Promise<unknown> {
+  const params: Record<string, string> = { description };
+  if (title !== undefined) params.title = title;
   try {
-    return await updateObject(args.videoId, {
-      description: args.description,
-      ...(args.title !== undefined ? { title: args.title } : {}),
-    });
+    return await graphRequest(videoId, { method: "POST", params });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const permissionError = /\b403\b|code 200|permission/i.test(message);
-
-    if (!args.postId || !permissionError || args.postId === args.videoId) {
-      throw error;
-    }
-
-    // Pour certains Reels, la légende est modifiable sur le post associé.
-    return updateObject(args.postId, { message: args.description });
+    // Certains Reels exposent un post_id différent de l'ID vidéo.
+    throw new Error(`Impossible de modifier le Reel ${videoId}. Vérifiez l'ID vidéo/post_id et les droits Page. ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
-/** Publie un commentaire sur une publication ou un Reel. */
-export async function postComment(args: {
-  postId: string;
-  message: string;
-  pin?: boolean;
-  pageAccessToken?: string;
-}): Promise<unknown> {
-  const token = args.pageAccessToken || config.facebook.accessToken;
-  const result = await graphRequest<{ id?: string }>(`${args.postId}/comments`, {
-    method: "POST",
-    accessToken: token,
-    params: { message: args.message },
-  });
-  if (args.pin && result && typeof result === "object" && "id" in result && result.id) {
-    try {
-      await pinComment({ commentId: result.id, pinned: true, pageAccessToken: token });
-    } catch (error) {
-      return { comment: result, pinError: error instanceof Error ? error.message : String(error) };
-    }
-  }
-  return result;
+export async function listComments(postId: string, limit = 25): Promise<unknown> {
+  return graphRequest(`${postId}/comments`, { params: { fields: "id,message,from,created_time,is_hidden", limit } });
 }
 
-/** Épingle ou désépingle un commentaire. */
-export async function pinComment(args: {
-  commentId: string;
-  pinned?: boolean;
-  pageAccessToken?: string;
+export async function postComment(postId: string, message: string): Promise<unknown> {
+  return graphRequest(`${postId}/comments`, { method: "POST", params: { message } });
+}
+
+export async function pinComment(commentId: string, pinned = true): Promise<unknown> {
+  return graphRequest(commentId, { method: "POST", params: { is_pinned: pinned } });
+}
+
+export async function checkVideoVisibility(videoId: string): Promise<unknown> {
+  return graphRequest(videoId, { params: { fields: "id,title,description,permalink_url,is_published,status,privacy,created_time,post_id" } });
+}
+
+
+/* ------------------------- Generic Graph + Marketing API ------------------------- */
+export async function graphApiRequest(args: {
+  path: string;
+  method?: UniversalMethod;
+  params?: Record<string, string | number | boolean | object | null | undefined>;
+  accessToken?: string;
 }): Promise<unknown> {
-  const token = args.pageAccessToken || config.facebook.accessToken;
-  const url = new URL(`${GRAPH_BASE()}/${args.commentId}`);
-  url.searchParams.set("access_token", token);
-  url.searchParams.set("is_pinned", String(args.pinned ?? true));
-  const res = await fetch(url, { method: "POST" });
+  requireFacebook();
+  const method = args.method ?? "GET";
+  const url = new URL(`${GRAPH_BASE()}/${args.path.replace(/^\//, "")}`);
+  const token = args.accessToken || config.facebook.accessToken;
+  const params = Object.entries(args.params ?? {}).filter(([, v]) => v !== undefined && v !== null);
+  const headers: Record<string, string> = { Accept: "application/json", Authorization: `Bearer ${token}` };
+  let body: URLSearchParams | undefined;
+  if (method === "GET") {
+    for (const [key, value] of params) url.searchParams.set(key, typeof value === "object" ? JSON.stringify(value) : String(value));
+  } else {
+    body = new URLSearchParams();
+    for (const [key, value] of params) body.set(key, typeof value === "object" ? JSON.stringify(value) : String(value));
+    headers["Content-Type"] = "application/x-www-form-urlencoded";
+  }
+  const res = await fetch(url, { method, headers, body });
   const text = await res.text();
   let data: unknown;
   try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
   if (!res.ok) {
     const err = (data as GraphError).error;
-    throw new Error(`Échec de l'épinglage du commentaire (${res.status})${err?.code ? ` [code ${err.code}]` : ""}: ${err?.message ?? text}`);
+    throw new Error(`Graph API ${res.status}${err?.code ? ` [${err.code}]` : ""}: ${err?.message ?? text}`);
   }
   return data;
 }
 
-/** Liste les commentaires d'une publication ou d'un Reel. */
-export async function listComments(args: {
-  postId: string;
-  limit?: number;
-  pageAccessToken?: string;
+export async function getObject(objectId: string, fields?: string): Promise<unknown> {
+  return graphApiRequest({ path: objectId, params: { fields } });
+}
+export async function createObject(path: string, params: Record<string, string | number | boolean | object | null | undefined>): Promise<unknown> {
+  return graphApiRequest({ path, method: "POST", params });
+}
+export async function updateObject(objectId: string, params: Record<string, string | number | boolean | object | null | undefined>): Promise<unknown> {
+  return graphApiRequest({ path: objectId, method: "POST", params });
+}
+export async function deleteObject(objectId: string): Promise<unknown> {
+  return graphApiRequest({ path: objectId, method: "DELETE" });
+}
+export async function listEdge(objectId: string, edge: string, params: Record<string, string | number | boolean | object | null | undefined> = {}): Promise<unknown> {
+  return graphApiRequest({ path: `${objectId}/${edge.replace(/^\//, "")}`, params });
+}
+
+export async function adsInsights(objectId: string, params: Record<string, string | number | boolean | object | null | undefined> = {}): Promise<unknown> {
+  return listEdge(objectId, "insights", params);
+}
+
+/* ------------------------- Universal Graph Engine ------------------------- */
+export type UniversalMethod = "GET" | "POST" | "DELETE" | "PUT" | "PATCH";
+export type UniversalValue = string | number | boolean | object | null;
+
+const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+const DANGEROUS_KEYS = new Set([
+  "budget", "daily_budget", "lifetime_budget", "bid_amount", "status",
+  "is_published", "delete", "access_token", "spend_cap", "billing_event"
+]);
+
+function redact(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redact);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k.toLowerCase().includes("token") || k.toLowerCase().includes("secret") ? "[REDACTED]" : k] = redact(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+export function analyzeGraphRequest(args: {
+  method?: UniversalMethod;
+  path: string;
+  params?: Record<string, UniversalValue | undefined>;
+  confirm?: boolean;
+  dryRun?: boolean;
+}) {
+  const method = args.method ?? "GET";
+  const params = args.params ?? {};
+  const dangerousFields = Object.keys(params).filter((k) => DANGEROUS_KEYS.has(k.toLowerCase()));
+  const isWrite = WRITE_METHODS.has(method);
+  const dangerous = isWrite && (method === "DELETE" || dangerousFields.length > 0 || /campaign|adset|ad|billing|budget/i.test(args.path));
+  return {
+    method,
+    path: args.path,
+    graphVersion: config.facebook.graphVersion,
+    isWrite,
+    dangerous,
+    dangerousFields,
+    requiresConfirmation: dangerous && !args.confirm,
+    dryRun: Boolean(args.dryRun),
+    safeParams: redact(params),
+  };
+}
+
+export async function universalGraphRequest(args: {
+  method?: UniversalMethod;
+  path: string;
+  params?: Record<string, UniversalValue | undefined>;
+  confirm?: boolean;
+  dryRun?: boolean;
+  paginate?: boolean;
+  maxPages?: number;
+  accessToken?: string;
 }): Promise<unknown> {
-  return graphRequest(`${args.postId}/comments`, {
-    accessToken: args.pageAccessToken || config.facebook.accessToken,
-    params: { fields: "id,message,from,created_time,is_hidden", limit: args.limit ?? 25 },
+  const analysis = analyzeGraphRequest(args);
+  if (analysis.requiresConfirmation) {
+    return {
+      confirmationRequired: true,
+      message: "Cette requête peut modifier, supprimer ou dépenser de l'argent. Relancez avec confirm=true après vérification.",
+      analysis,
+    };
+  }
+  if (args.dryRun) return { dryRun: true, analysis };
+
+  const first = await graphApiRequest({
+    path: args.path,
+    method: args.method,
+    params: args.params,
+    accessToken: args.accessToken,
   });
+  if (!args.paginate || !first || typeof first !== "object" || !Array.isArray((first as any).data)) return first;
+
+  const collected = [...(first as any).data];
+  let next = (first as any).paging?.next as string | undefined;
+  let pages = 1;
+  const maxPages = Math.max(1, Math.min(args.maxPages ?? 10, 50));
+  while (next && pages < maxPages) {
+    const response = await fetch(next, { headers: { Authorization: `Bearer ${args.accessToken || config.facebook.accessToken}` } });
+    const data = await response.json();
+    if (!response.ok || data.error) throw new Error(`Pagination Graph API ${response.status}: ${data.error?.message ?? "Erreur"}`);
+    collected.push(...(data.data ?? []));
+    next = data.paging?.next;
+    pages++;
+  }
+  return { ...first, data: collected, pagination: { pages, truncated: Boolean(next) } };
+}
+
+export async function diagnoseFacebook(): Promise<unknown> {
+  const report: Record<string, unknown> = {
+    graphVersion: config.facebook.graphVersion,
+    pageIdConfigured: Boolean(config.facebook.pageId),
+    tokenConfigured: Boolean(config.facebook.accessToken),
+  };
+  try { report.me = await graphApiRequest({ path: "me", params: { fields: "id,name" } }); }
+  catch (e) { report.meError = e instanceof Error ? e.message : String(e); }
+  try { report.pages = await listPages(); }
+  catch (e) { report.pagesError = e instanceof Error ? e.message : String(e); }
+  if (config.facebook.pageId) {
+    try { report.page = await graphApiRequest({ path: config.facebook.pageId, params: { fields: "id,name,category" } }); }
+    catch (e) { report.pageError = e instanceof Error ? e.message : String(e); }
+    try { report.videos = await listVideos(config.facebook.pageId); }
+    catch (e) { report.videosError = e instanceof Error ? e.message : String(e); }
+  }
+  return report;
 }

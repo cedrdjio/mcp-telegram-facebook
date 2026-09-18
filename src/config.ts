@@ -19,7 +19,7 @@ export const config = {
   facebook: {
     accessToken: process.env.FACEBOOK_ACCESS_TOKEN ?? "",
     pageId: process.env.FACEBOOK_PAGE_ID ?? "",
-    graphVersion: process.env.FACEBOOK_GRAPH_VERSION ?? "v21.0",
+    graphVersion: process.env.FACEBOOK_GRAPH_VERSION ?? "v26.0",
   },
   downloadDir: resolve(process.env.DOWNLOAD_DIR ?? "./downloads"),
 };
