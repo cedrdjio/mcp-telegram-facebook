@@ -165,3 +165,28 @@ Une interface web s'ouvre : vous pouvez appeler chaque outil manuellement.
 ## Licence
 
 MIT
+
+
+## Permissions Facebook
+
+Le serveur utilise les variables d’environnement Railway suivantes :
+
+- `FACEBOOK_ACCESS_TOKEN` : **Page Access Token** de la Page cible ;
+- `FACEBOOK_PAGE_ID` : identifiant de la Page ;
+- `FACEBOOK_GRAPH_VERSION` : version Graph API, par défaut `v21.0`.
+
+Pour les opérations de lecture, modification de Reels et commentaires, le token doit
+avoir au minimum les autorisations `pages_show_list`, `pages_read_engagement`,
+`pages_read_user_content`, `pages_manage_posts`, `pages_manage_engagement`,
+`pages_manage_metadata` et `read_insights`. Le code ne tente pas de demander ou
+d’accorder automatiquement ces permissions : elles doivent être accordées dans Meta.
+
+Pour modifier un Reel, utilisez son `videoId` et, si disponible, son `postId`/`post_id`.
+Le serveur tente l’objet vidéo puis utilise le post associé comme solution de repli
+si Facebook renvoie une erreur de permission sur l’objet vidéo.
+
+### Railway
+
+Aucune valeur n’est codée en dur : les variables existantes sont lues via
+`process.env`. Après modification des variables dans Railway, redéployez ou
+redémarrez le service pour charger le nouveau token.

@@ -9,6 +9,11 @@ import {
   getPageInsights,
   postVideoToPage,
   postToPageFeed,
+  listPageVideos,
+  updateVideo,
+  postComment,
+  pinComment,
+  listComments,
 } from "./facebook.js";
 
 const server = new McpServer({
@@ -137,6 +142,76 @@ server.tool(
     } catch (e) {
       return fail(e);
     }
+  }
+);
+
+/* ====================== Facebook — Vidéos ====================== */
+
+server.tool(
+  "facebook_list_videos",
+  "Liste les vidéos/Reels publiés sur une Page avec leurs IDs et post_id.",
+  {
+    pageId: z.string().optional(),
+    limit: z.number().int().min(1).max(100).default(25),
+    pageAccessToken: z.string().optional(),
+  },
+  async (args) => {
+    try { return ok(await listPageVideos(args)); } catch (e) { return fail(e); }
+  }
+);
+
+server.tool(
+  "facebook_update_video",
+  "Modifie la description et éventuellement le titre d'une vidéo/Reel déjà publié, sans la supprimer.",
+  {
+    videoId: z.string().describe("ID de la vidéo/Reel à modifier."),
+    description: z.string().describe("Nouvelle description complète."),
+    title: z.string().optional().describe("Nouveau titre facultatif."),
+    postId: z.string().optional().describe("post_id associé au Reel, utilisé comme solution de repli."),
+    pageAccessToken: z.string().optional().describe("Page Access Token spécifique."),
+  },
+  async (args) => {
+    try { return ok(await updateVideo(args)); } catch (e) { return fail(e); }
+  }
+);
+
+server.tool(
+  "facebook_list_comments",
+  "Liste les commentaires d'une publication ou d'un Reel.",
+  {
+    postId: z.string().describe("ID de publication post_id."),
+    limit: z.number().int().min(1).max(100).default(25),
+    pageAccessToken: z.string().optional(),
+  },
+  async (args) => {
+    try { return ok(await listComments(args)); } catch (e) { return fail(e); }
+  }
+);
+
+server.tool(
+  "facebook_post_comment",
+  "Publie un commentaire sous une publication/Reel et tente de l'épingler.",
+  {
+    postId: z.string().describe("ID de publication post_id."),
+    message: z.string().describe("Texte du commentaire."),
+    pin: z.boolean().default(false).describe("Tenter d'épingler le commentaire."),
+    pageAccessToken: z.string().optional(),
+  },
+  async (args) => {
+    try { return ok(await postComment(args)); } catch (e) { return fail(e); }
+  }
+);
+
+server.tool(
+  "facebook_pin_comment",
+  "Épingle ou désépingle un commentaire.",
+  {
+    commentId: z.string().describe("ID du commentaire."),
+    pinned: z.boolean().default(true),
+    pageAccessToken: z.string().optional(),
+  },
+  async (args) => {
+    try { return ok(await pinComment(args)); } catch (e) { return fail(e); }
   }
 );
 
