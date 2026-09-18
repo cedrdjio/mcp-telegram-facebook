@@ -31,7 +31,7 @@ const REGISTERED_TOOL_NAMES = new Set<string>();
 function createServer() {
 const server = new McpServer({
   name: "mcp-telegram-facebook",
-  version: "0.4.0",
+  version: "0.4.2",
 });
 
 // All tools are registered synchronously in this function BEFORE any transport
@@ -415,6 +415,16 @@ async function closeSession(id: string, session: HttpSession): Promise<void> {
   }
 }
 
+function validOAuthRedirectForError(redirectUri: string): boolean {
+  try {
+    const u = new URL(redirectUri);
+    return u.protocol === "https:" && u.hostname === "chatgpt.com" &&
+      (/^\/connector\/oauth(?:\/[^/]+)?$/.test(u.pathname) || u.pathname === "/connector_platform_oauth_redirect");
+  } catch {
+    return false;
+  }
+}
+
 async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 
@@ -457,7 +467,17 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
     const resource = url.searchParams.get("resource") ?? "";
     const state = url.searchParams.get("state") ?? "";
     if (responseType !== "code" || !clientId || !redirectUri || !codeChallenge || codeChallengeMethod !== "S256" || resource !== (process.env.MCP_PUBLIC_URL || `https://${req.headers.host ?? ""}`).replace(/\/$/, "")) {
-      writeJson(res, 400, { error: "invalid_request", error_description: "Paramètres OAuth invalides ou resource manquant." });
+      if (redirectUri && validOAuthRedirectForError(redirectUri)) {
+        const redirect = new URL(redirectUri);
+        redirect.searchParams.set("error", "invalid_request");
+        redirect.searchParams.set("error_description", "Paramètres OAuth invalides ou resource manquant.");
+        redirect.searchParams.set("iss", oauthAuthorizationServerMetadata().issuer);
+        if (state) redirect.searchParams.set("state", state);
+        res.writeHead(302, { Location: redirect.toString(), "cache-control": "no-store" });
+        res.end();
+      } else {
+        writeJson(res, 400, { error: "invalid_request", error_description: "Paramètres OAuth invalides ou resource manquant." });
+      }
       return;
     }
     res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
@@ -477,19 +497,49 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
     const resource = String(body.resource ?? "");
     const state = String(body.state ?? "");
     if (!isValidLogin(username, password)) {
-      writeJson(res, 401, { error: "access_denied", error_description: "Identifiants invalides." });
+      // If we have a valid OAuth callback, return the authorization error to
+      // that callback and include iss because discovery advertises RFC 9207.
+      // Never log the username, password, code, verifier or state value.
+      if (redirectUri && validOAuthRedirectForError(redirectUri)) {
+        const redirect = new URL(redirectUri);
+        redirect.searchParams.set("error", "access_denied");
+        redirect.searchParams.set("error_description", "Identifiants invalides.");
+        redirect.searchParams.set("iss", oauthAuthorizationServerMetadata().issuer);
+        if (state) redirect.searchParams.set("state", state);
+        console.error(`[oauth] authorize denied redirect=${redirectUri}`);
+        res.writeHead(302, { Location: redirect.toString(), "cache-control": "no-store" });
+        res.end();
+      } else {
+        writeJson(res, 401, { error: "access_denied", error_description: "Identifiants invalides." });
+      }
       return;
     }
     try {
       if (codeChallengeMethod !== "S256") throw new Error("unsupported_code_challenge_method");
       const code = createAuthorizationCode({ clientId, redirectUri, codeChallenge, scope, resource });
       const redirect = new URL(redirectUri);
+      // RFC 9207 issuer identification: because discovery advertises
+      // authorization_response_iss_parameter_supported=true, every successful
+      // authorization response MUST carry the authorization-server issuer.
       redirect.searchParams.set("code", code);
+      redirect.searchParams.set("iss", oauthAuthorizationServerMetadata().issuer);
       if (state) redirect.searchParams.set("state", state);
+      console.error(`[oauth] authorize success client=${clientId} redirect=${redirectUri} state=${state ? "present" : "absent"}`);
       res.writeHead(302, { Location: redirect.toString(), "cache-control": "no-store" });
       res.end();
     } catch (error) {
-      writeJson(res, 400, { error: "invalid_request", error_description: error instanceof Error ? error.message : String(error) });
+      const description = error instanceof Error ? error.message : String(error);
+      if (redirectUri && validOAuthRedirectForError(redirectUri)) {
+        const redirect = new URL(redirectUri);
+        redirect.searchParams.set("error", "invalid_request");
+        redirect.searchParams.set("error_description", description);
+        redirect.searchParams.set("iss", oauthAuthorizationServerMetadata().issuer);
+        if (state) redirect.searchParams.set("state", state);
+        res.writeHead(302, { Location: redirect.toString(), "cache-control": "no-store" });
+        res.end();
+      } else {
+        writeJson(res, 400, { error: "invalid_request", error_description: description });
+      }
     }
     return;
   }
@@ -508,8 +558,10 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
     }
     try {
       const token = exchangeAuthorizationCode({ code, clientId, redirectUri, codeVerifier, resource });
+      console.error(`[oauth] token success client=${clientId} redirect=${redirectUri} resource=${resource}`);
       writeJson(res, 200, token);
     } catch (error) {
+      console.error(`[oauth] token failed client=${clientId || "unknown"} redirect=${redirectUri || "unknown"} reason=${error instanceof Error ? error.message : String(error)}`);
       writeJson(res, 400, { error: "invalid_grant", error_description: error instanceof Error ? error.message : String(error) });
     }
     return;
