@@ -196,3 +196,23 @@ Outils supplémentaires:
 - `facebook_diagnose`: diagnostic du token, Page, version et vidéos.
 
 Les opérations sensibles retournent `confirmationRequired: true`. Relancer ensuite avec `confirm: true`. Ne jamais fournir un token dans les paramètres: le MCP utilise `FACEBOOK_ACCESS_TOKEN` et le transmet dans l'en-tête Authorization.
+
+
+## Multi-Pages / moteur universel
+
+`FACEBOOK_PAGE_ID` est uniquement une valeur par défaut. Il ne limite pas le MCP à une seule Page.
+
+Pour cibler une autre Page, fournissez `pageId` dans l’outil concerné ou utilisez directement `facebook_universal_request` avec le chemin de la Page :
+
+```json
+{
+  "method": "GET",
+  "path": "/PAGE_ID/videos",
+  "params": {
+    "fields": "id,title,description,permalink_url",
+    "limit": 25
+  }
+}
+```
+
+Le token doit disposer des droits sur la Page ciblée. Un seul token peut gérer plusieurs Pages accessibles via `/me/accounts`; le MCP ne doit jamais coder une Page en dur.

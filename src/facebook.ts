@@ -8,6 +8,12 @@ interface GraphError {
   error?: { message?: string; type?: string; code?: number; error_subcode?: number };
 }
 
+type GraphPaginationResponse<T = unknown> = {
+  data?: T[];
+  paging?: { next?: string; previous?: string };
+  error?: { message?: string; type?: string; code?: number; error_subcode?: number };
+};
+
 async function graphRequest<T = unknown>(
   path: string,
   options: {
@@ -55,7 +61,7 @@ async function graphRequest<T = unknown>(
 
 export async function listPages(): Promise<unknown> {
   return graphRequest("me/accounts", {
-    params: { fields: "id,name,category,access_token,tasks" },
+    params: { fields: "id,name,category,tasks" },
   });
 }
 
@@ -97,9 +103,11 @@ export async function postVideoToPage(args: {
   const token = args.pageAccessToken || config.facebook.accessToken;
 
   const url = new URL(`${GRAPH_BASE()}/${pageId}/videos`);
-  url.searchParams.set("access_token", token);
-
-  const res = await fetch(url, { method: "POST", body: form });
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
   const text = await res.text();
   let data: unknown;
   try {
@@ -126,11 +134,17 @@ export async function postToPageFeed(args: {
   const token = args.pageAccessToken || config.facebook.accessToken;
 
   const url = new URL(`${GRAPH_BASE()}/${pageId}/feed`);
-  url.searchParams.set("access_token", token);
-  url.searchParams.set("message", args.message);
-  if (args.link) url.searchParams.set("link", args.link);
+  const body = new URLSearchParams({ message: args.message });
+  if (args.link) body.set("link", args.link);
 
-  const res = await fetch(url, { method: "POST" });
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body,
+  });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(`Échec du post (${res.status}): ${(data as GraphError).error?.message ?? ""}`);
@@ -307,7 +321,7 @@ export async function universalGraphRequest(args: {
   const maxPages = Math.max(1, Math.min(args.maxPages ?? 10, 50));
   while (next && pages < maxPages) {
     const response = await fetch(next, { headers: { Authorization: `Bearer ${args.accessToken || config.facebook.accessToken}` } });
-    const data = await response.json();
+    const data = (await response.json()) as GraphPaginationResponse;
     if (!response.ok || data.error) throw new Error(`Pagination Graph API ${response.status}: ${data.error?.message ?? "Erreur"}`);
     collected.push(...(data.data ?? []));
     next = data.paging?.next;

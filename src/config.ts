@@ -18,6 +18,7 @@ export const config = {
   },
   facebook: {
     accessToken: process.env.FACEBOOK_ACCESS_TOKEN ?? "",
+    // Optionnel : sert uniquement de Page par défaut. Le moteur universel accepte n’importe quel Page ID.
     pageId: process.env.FACEBOOK_PAGE_ID ?? "",
     graphVersion: process.env.FACEBOOK_GRAPH_VERSION ?? "v26.0",
   },
