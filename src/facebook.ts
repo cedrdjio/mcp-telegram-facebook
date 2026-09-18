@@ -65,6 +65,18 @@ export async function listPages(): Promise<unknown> {
   });
 }
 
+/** Résout le Page Access Token côté serveur. Il n'est jamais exposé au modèle. */
+async function resolvePageAccessToken(pageId: string): Promise<string> {
+  const response = await graphRequest<{ data?: Array<{ id?: string; access_token?: string }> }>("me/accounts", {
+    params: { fields: "id,access_token" },
+  });
+  const page = response.data?.find((item) => item.id === pageId);
+  if (!page?.access_token) {
+    throw new Error(`Impossible de récupérer le Page Access Token pour la Page ${pageId}. Vérifiez que le compte connecté gère cette Page.`);
+  }
+  return page.access_token;
+}
+
 export async function getPageInsights(pageId: string, metrics: string, period = "day"): Promise<unknown> {
   return graphRequest(`${pageId}/insights`, {
     params: { metric: metrics, period },
@@ -80,7 +92,6 @@ export async function postVideoToPage(args: {
   filePath: string;
   description?: string;
   title?: string;
-  pageAccessToken?: string;
 }): Promise<unknown> {
   requireFacebook();
   const pageId = args.pageId || config.facebook.pageId;
@@ -99,8 +110,8 @@ export async function postVideoToPage(args: {
   if (args.description) form.append("description", args.description);
   if (args.title) form.append("title", args.title);
 
-  // Une Page doit utiliser son propre Page Access Token pour publier.
-  const token = args.pageAccessToken || config.facebook.accessToken;
+  // Une Page utilise son propre Page Access Token. Le token est résolu et conservé côté serveur.
+  const token = await resolvePageAccessToken(pageId);
 
   const url = new URL(`${GRAPH_BASE()}/${pageId}/videos`);
   const res = await fetch(url, {
@@ -127,11 +138,10 @@ export async function postToPageFeed(args: {
   pageId?: string;
   message: string;
   link?: string;
-  pageAccessToken?: string;
 }): Promise<unknown> {
   const pageId = args.pageId || config.facebook.pageId;
   if (!pageId) throw new Error("Aucune Page cible : passez `pageId` ou définissez FACEBOOK_PAGE_ID.");
-  const token = args.pageAccessToken || config.facebook.accessToken;
+  const token = await resolvePageAccessToken(pageId);
 
   const url = new URL(`${GRAPH_BASE()}/${pageId}/feed`);
   const body = new URLSearchParams({ message: args.message });

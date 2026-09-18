@@ -1,7 +1,7 @@
 {
   "name": "mcp-telegram-facebook",
-  "version": "0.2.0",
-  "description": "Serveur MCP pour récupérer des vidéos Telegram, les reposter sur Facebook avec des descriptions personnalisées, et gérer un compte Facebook ainsi que ses campagnes publicitaires.",
+  "version": "0.4.0",
+  "description": "Serveur MCP universel Telegram–Facebook pour ChatGPT : 31 outils, Streamable HTTP, OAuth 2.1/PKCE, annotations, schémas de sortie et moteur Graph API.",
   "type": "module",
   "bin": {
     "mcp-telegram-facebook": "dist/index.js"
@@ -28,7 +28,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "dotenv": "^16.4.5",
     "telegram": "^2.22.2",
     "zod": "^3.23.8"

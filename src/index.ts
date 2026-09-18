@@ -26,20 +26,86 @@ import {
   universalGraphRequest, analyzeGraphRequest, diagnoseFacebook,
 } from "./facebook.js";
 
+const REGISTERED_TOOL_NAMES = new Set<string>();
+
 function createServer() {
 const server = new McpServer({
   name: "mcp-telegram-facebook",
-  version: "0.3.0",
+  version: "0.4.0",
 });
 
 // All tools are registered synchronously in this function BEFORE any transport
 // is connected. Each HTTP session receives a fresh createServer() instance.
 console.error("MCP server factory: registering universal Facebook/Telegram tools");
 
-/** Enveloppe une valeur en réponse MCP JSON lisible + gère les erreurs. */
+/** Enveloppe une valeur en réponse MCP avec contenu texte ET structuredContent. */
 function ok(data: unknown) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+    structuredContent: { data },
+  };
 }
+
+function toolTitle(name: string): string {
+  const special: Record<string, string> = {
+    facebook_list_pages: "Lister les Pages Facebook",
+    facebook_post_video: "Publier une vidéo Facebook",
+    facebook_post_feed: "Publier sur Facebook",
+    facebook_list_videos: "Lister les vidéos / Reels",
+    facebook_update_video: "Modifier un Reel",
+    facebook_list_comments: "Lister les commentaires",
+    facebook_post_comment: "Publier un commentaire",
+    facebook_pin_comment: "Épingler un commentaire",
+    facebook_graph_request: "Requête Graph API",
+    facebook_universal_request: "Requête Facebook universelle",
+    facebook_analyze_request: "Analyser une requête Facebook",
+    facebook_diagnose: "Diagnostiquer Facebook",
+    facebook_delete_object: "Supprimer un objet Facebook",
+    repost_telegram_to_facebook: "Reposter Telegram vers Facebook",
+  };
+  if (special[name]) return special[name];
+  return name
+    .replace(/^facebook_/, "Facebook — ")
+    .replace(/^telegram_/, "Telegram — ")
+    .replace(/_/g, " ")
+    .replace(/(^| )([a-z])/g, (_, a, b) => a + b.toUpperCase());
+}
+
+function toolRisk(name: string) {
+  const destructive = /delete/i.test(name);
+  const readOnly = /^(facebook_(list|get|diagnose|analyze|check|validate)|facebook_ads_insights|facebook_page_insights|telegram_list)/i.test(name);
+  const idempotent = readOnly || destructive || /pin_comment|update_video|update_object/i.test(name);
+  return { readOnlyHint: readOnly, destructiveHint: destructive, idempotentHint: idempotent, openWorldHint: true };
+}
+
+/**
+ * Wrapper unique pour TOUS les outils. Il garantit que chaque outil exposé
+ * possède titre, annotations, outputSchema et déclaration OAuth compatible ChatGPT.
+ */
+function registerAction(
+  name: string,
+  description: string,
+  inputSchema: Record<string, z.ZodTypeAny>,
+  handler: (args: any) => Promise<any> | any,
+) {
+  REGISTERED_TOOL_NAMES.add(name);
+  const securitySchemes = [{ type: "oauth2", scopes: ["mcp"] }];
+  server.registerTool(
+    name,
+    {
+      title: toolTitle(name),
+      description,
+      inputSchema,
+      outputSchema: { data: z.unknown() },
+      annotations: { title: toolTitle(name), ...toolRisk(name) },
+      // OpenAI's compatibility metadata is emitted in tools/list by the SDK.
+      _meta: { securitySchemes },
+    } as any,
+    handler,
+  );
+}
+
+
 function fail(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   return { content: [{ type: "text" as const, text: `❌ ${message}` }], isError: true };
@@ -47,7 +113,7 @@ function fail(error: unknown) {
 
 /* ============================ Telegram ============================ */
 
-server.tool(
+registerAction(
   "telegram_list_videos",
   "Liste les vidéos récentes d'un chat, canal ou groupe Telegram. " +
     "Retourne pour chacune : messageId, légende, nom de fichier, taille et durée. " +
@@ -67,7 +133,7 @@ server.tool(
   }
 );
 
-server.tool(
+registerAction(
   "telegram_download_video",
   "Télécharge une vidéo Telegram sur le disque local et retourne son chemin. " +
     "Ce chemin sera passé à facebook_post_video pour la republier.",
@@ -86,9 +152,9 @@ server.tool(
 
 /* ======================== Facebook — Pages ======================== */
 
-server.tool(
+registerAction(
   "facebook_list_pages",
-  "Liste les Pages Facebook gérées par le compte, avec leur ID, nom et Page Access Token.",
+  "Liste les Pages Facebook gérées par le compte, avec leur ID et leur nom. Les tokens restent côté serveur et ne sont jamais renvoyés au modèle.",
   {},
   async () => {
     try {
@@ -99,7 +165,7 @@ server.tool(
   }
 );
 
-server.tool(
+registerAction(
   "facebook_post_video",
   "Publie une vidéo locale (téléchargée depuis Telegram) sur une Page Facebook, " +
     "avec un titre et une description personnalisés.",
@@ -108,10 +174,6 @@ server.tool(
     description: z.string().optional().describe("Description/légende personnalisée du post."),
     title: z.string().optional().describe("Titre de la vidéo (optionnel)."),
     pageId: z.string().optional().describe("ID de la Page cible (sinon FACEBOOK_PAGE_ID)."),
-    pageAccessToken: z
-      .string()
-      .optional()
-      .describe("Page Access Token spécifique (obtenu via facebook_list_pages)."),
   },
   async (args) => {
     try {
@@ -122,14 +184,13 @@ server.tool(
   }
 );
 
-server.tool(
+registerAction(
   "facebook_post_feed",
   "Publie un post texte (avec lien optionnel) sur le fil d'une Page Facebook.",
   {
     message: z.string().describe("Texte du post."),
     link: z.string().url().optional().describe("Lien à joindre au post."),
     pageId: z.string().optional().describe("ID de la Page cible (sinon FACEBOOK_PAGE_ID)."),
-    pageAccessToken: z.string().optional().describe("Page Access Token spécifique."),
   },
   async (args) => {
     try {
@@ -140,7 +201,7 @@ server.tool(
   }
 );
 
-server.tool(
+registerAction(
   "facebook_page_insights",
   "Récupère les statistiques d'une Page Facebook (vues, portée, engagement...).",
   {
@@ -162,37 +223,37 @@ server.tool(
 
 
 
-server.tool("facebook_list_videos", "Liste les vidéos/Reels publiés avec leur videoId et post_id.", {
+registerAction("facebook_list_videos", "Liste les vidéos/Reels publiés avec leur videoId et post_id.", {
   pageId: z.string().optional(), limit: z.number().int().min(1).max(100).default(25)
 }, async ({ pageId, limit }) => { try { return ok(await listVideos(pageId, limit)); } catch (e) { return fail(e); } });
 
-server.tool("facebook_update_video", "Modifie la description et éventuellement le titre d'un Reel existant.", {
+registerAction("facebook_update_video", "Modifie la description et éventuellement le titre d'un Reel existant.", {
   videoId: z.string(), description: z.string(), title: z.string().optional()
 }, async ({ videoId, description, title }) => { try { return ok(await updateVideo(videoId, description, title)); } catch (e) { return fail(e); } });
 
-server.tool("facebook_list_comments", "Liste les commentaires d'une publication ou d'un Reel.", {
+registerAction("facebook_list_comments", "Liste les commentaires d'une publication ou d'un Reel.", {
   postId: z.string(), limit: z.number().int().min(1).max(100).default(25)
 }, async ({ postId, limit }) => { try { return ok(await listComments(postId, limit)); } catch (e) { return fail(e); } });
 
-server.tool("facebook_post_comment", "Publie un commentaire sous une publication.", {
+registerAction("facebook_post_comment", "Publie un commentaire sous une publication.", {
   postId: z.string(), message: z.string()
 }, async ({ postId, message }) => { try { return ok(await postComment(postId, message)); } catch (e) { return fail(e); } });
 
-server.tool("facebook_pin_comment", "Épingle ou désépingle un commentaire.", {
+registerAction("facebook_pin_comment", "Épingle ou désépingle un commentaire.", {
   commentId: z.string(), pinned: z.boolean().default(true)
 }, async ({ commentId, pinned }) => { try { return ok(await pinComment(commentId, pinned)); } catch (e) { return fail(e); } });
 
-server.tool("facebook_check_video_visibility", "Vérifie les champs de visibilité disponibles pour un Reel.", {
+registerAction("facebook_check_video_visibility", "Vérifie les champs de visibilité disponibles pour un Reel.", {
   videoId: z.string()
 }, async ({ videoId }) => { try { return ok(await checkVideoVisibility(videoId)); } catch (e) { return fail(e); } });
 
 
 /* ======================== Graph API avancée ======================== */
-server.tool("facebook_graph_request", "Appel Graph API générique pour les endpoints autorisés. Utiliser avec prudence.", {
+registerAction("facebook_graph_request", "Appel Graph API générique pour les endpoints autorisés. Utiliser avec prudence.", {
   path: z.string(), method: z.enum(["GET", "POST", "DELETE"]).default("GET"), params: z.record(z.union([z.string(), z.number(), z.boolean(), z.record(z.any()), z.null()])).optional()
 }, async ({ path, method, params }) => { try { return ok(await graphApiRequest({ path, method, params })); } catch (e) { return fail(e); } });
 
-server.tool("facebook_universal_request", "Moteur universel Graph API: paramètres dynamiques, simulation, confirmation des actions sensibles et pagination.", {
+registerAction("facebook_universal_request", "Moteur universel Graph API: paramètres dynamiques, simulation, confirmation des actions sensibles et pagination.", {
   path: z.string(),
   method: z.enum(["GET", "POST", "DELETE", "PUT", "PATCH"]).default("GET"),
   params: z.record(z.any()).optional(),
@@ -202,32 +263,32 @@ server.tool("facebook_universal_request", "Moteur universel Graph API: paramètr
   maxPages: z.number().int().min(1).max(50).default(10),
 }, async ({ path, method, params, confirm, dryRun, paginate, maxPages }) => { try { return ok(await universalGraphRequest({ path, method, params, confirm, dryRun, paginate, maxPages })); } catch (e) { return fail(e); } });
 
-server.tool("facebook_analyze_request", "Analyse une requête sans l'exécuter et indique si une confirmation est nécessaire.", {
+registerAction("facebook_analyze_request", "Analyse une requête sans l'exécuter et indique si une confirmation est nécessaire.", {
   path: z.string(), method: z.enum(["GET", "POST", "DELETE", "PUT", "PATCH"]).default("GET"), params: z.record(z.any()).optional(), confirm: z.boolean().default(false), dryRun: z.boolean().default(true)
 }, async ({ path, method, params, confirm, dryRun }) => ok(analyzeGraphRequest({ path, method, params, confirm, dryRun })));
 
-server.tool("facebook_diagnose", "Diagnostic complet du token, de la Page, de la version Graph API et de la lecture des vidéos.", {}, async () => { try { return ok(await diagnoseFacebook()); } catch (e) { return fail(e); } });
+registerAction("facebook_diagnose", "Diagnostic complet du token, de la Page, de la version Graph API et de la lecture des vidéos.", {}, async () => { try { return ok(await diagnoseFacebook()); } catch (e) { return fail(e); } });
 
-server.tool("facebook_get_object", "Lit un objet Facebook par ID avec les champs demandés.", { objectId: z.string(), fields: z.string().optional() }, async ({ objectId, fields }) => { try { return ok(await getObject(objectId, fields)); } catch (e) { return fail(e); } });
-server.tool("facebook_create_object", "Crée un objet Graph API sur un chemin autorisé (ex: act_ID/campaigns, act_ID/adsets, act_ID/ads).", { path: z.string(), params: z.record(z.union([z.string(), z.number(), z.boolean(), z.record(z.any()), z.null()])) }, async ({ path, params }) => { try { return ok(await createObject(path, params)); } catch (e) { return fail(e); } });
-server.tool("facebook_update_object", "Met à jour un objet Facebook/Marketing API par ID.", { objectId: z.string(), params: z.record(z.union([z.string(), z.number(), z.boolean(), z.record(z.any()), z.null()])) }, async ({ objectId, params }) => { try { return ok(await updateObject(objectId, params)); } catch (e) { return fail(e); } });
-server.tool("facebook_delete_object", "Supprime un objet Facebook/Marketing API. Action irréversible.", { objectId: z.string() }, async ({ objectId }) => { try { return ok(await deleteObject(objectId)); } catch (e) { return fail(e); } });
-server.tool("facebook_list_edge", "Liste une relation/edge d'un objet: campaigns, adsets, ads, creatives, insights, comments, etc.", { objectId: z.string(), edge: z.string(), params: z.record(z.union([z.string(), z.number(), z.boolean(), z.record(z.any()), z.null()])).optional() }, async ({ objectId, edge, params }) => { try { return ok(await listEdge(objectId, edge, params)); } catch (e) { return fail(e); } });
-server.tool("facebook_ads_insights", "Récupère les statistiques publicitaires d'un compte, campagne, ensemble ou annonce.", { objectId: z.string(), fields: z.string().optional(), datePreset: z.string().optional(), timeRange: z.record(z.string()).optional(), breakdowns: z.string().optional(), level: z.string().optional(), limit: z.number().int().optional() }, async ({ objectId, fields, datePreset, timeRange, breakdowns, level, limit }) => { try { return ok(await adsInsights(objectId, { fields, date_preset: datePreset, time_range: timeRange, breakdowns, level, limit })); } catch (e) { return fail(e); } });
+registerAction("facebook_get_object", "Lit un objet Facebook par ID avec les champs demandés.", { objectId: z.string(), fields: z.string().optional() }, async ({ objectId, fields }) => { try { return ok(await getObject(objectId, fields)); } catch (e) { return fail(e); } });
+registerAction("facebook_create_object", "Crée un objet Graph API sur un chemin autorisé (ex: act_ID/campaigns, act_ID/adsets, act_ID/ads).", { path: z.string(), params: z.record(z.union([z.string(), z.number(), z.boolean(), z.record(z.any()), z.null()])) }, async ({ path, params }) => { try { return ok(await createObject(path, params)); } catch (e) { return fail(e); } });
+registerAction("facebook_update_object", "Met à jour un objet Facebook/Marketing API par ID.", { objectId: z.string(), params: z.record(z.union([z.string(), z.number(), z.boolean(), z.record(z.any()), z.null()])) }, async ({ objectId, params }) => { try { return ok(await updateObject(objectId, params)); } catch (e) { return fail(e); } });
+registerAction("facebook_delete_object", "Supprime un objet Facebook/Marketing API. Action irréversible.", { objectId: z.string() }, async ({ objectId }) => { try { return ok(await deleteObject(objectId)); } catch (e) { return fail(e); } });
+registerAction("facebook_list_edge", "Liste une relation/edge d'un objet: campaigns, adsets, ads, creatives, insights, comments, etc.", { objectId: z.string(), edge: z.string(), params: z.record(z.union([z.string(), z.number(), z.boolean(), z.record(z.any()), z.null()])).optional() }, async ({ objectId, edge, params }) => { try { return ok(await listEdge(objectId, edge, params)); } catch (e) { return fail(e); } });
+registerAction("facebook_ads_insights", "Récupère les statistiques publicitaires d'un compte, campagne, ensemble ou annonce.", { objectId: z.string(), fields: z.string().optional(), datePreset: z.string().optional(), timeRange: z.record(z.string()).optional(), breakdowns: z.string().optional(), level: z.string().optional(), limit: z.number().int().optional() }, async ({ objectId, fields, datePreset, timeRange, breakdowns, level, limit }) => { try { return ok(await adsInsights(objectId, { fields, date_preset: datePreset, time_range: timeRange, breakdowns, level, limit })); } catch (e) { return fail(e); } });
 
 /* Raccourcis Marketing API */
-server.tool("facebook_list_ad_accounts", "Liste les comptes publicitaires accessibles.", {}, async () => { try { return ok(await graphApiRequest({ path: "me/adaccounts", params: { fields: "id,account_id,name,account_status,currency,timezone_name,business" } })); } catch (e) { return fail(e); } });
-server.tool("facebook_list_campaigns", "Liste les campagnes d'un compte publicitaire.", { adAccountId: z.string(), fields: z.string().optional(), limit: z.number().int().optional() }, async ({ adAccountId, fields, limit }) => { try { return ok(await listEdge(`act_${adAccountId.replace(/^act_/, "")}`, "campaigns", { fields: fields ?? "id,name,objective,status,effective_status,daily_budget,lifetime_budget,created_time,updated_time", limit })); } catch (e) { return fail(e); } });
-server.tool("facebook_list_adsets", "Liste les ensembles de publicités.", { adAccountId: z.string(), fields: z.string().optional(), limit: z.number().int().optional() }, async ({ adAccountId, fields, limit }) => { try { return ok(await listEdge(`act_${adAccountId.replace(/^act_/, "")}`, "adsets", { fields: fields ?? "id,name,campaign_id,status,effective_status,daily_budget,lifetime_budget,targeting,optimization_goal,billing_event", limit })); } catch (e) { return fail(e); } });
-server.tool("facebook_list_ads", "Liste les annonces publicitaires.", { adAccountId: z.string(), fields: z.string().optional(), limit: z.number().int().optional() }, async ({ adAccountId, fields, limit }) => { try { return ok(await listEdge(`act_${adAccountId.replace(/^act_/, "")}`, "ads", { fields: fields ?? "id,name,adset_id,campaign_id,status,effective_status,creative", limit })); } catch (e) { return fail(e); } });
-server.tool("facebook_list_adcreatives", "Liste les créations publicitaires.", { adAccountId: z.string(), fields: z.string().optional(), limit: z.number().int().optional() }, async ({ adAccountId, fields, limit }) => { try { return ok(await listEdge(`act_${adAccountId.replace(/^act_/, "")}`, "adcreatives", { fields: fields ?? "id,name,object_story_spec,asset_feed_spec,status", limit })); } catch (e) { return fail(e); } });
-server.tool("facebook_list_custom_audiences", "Liste les audiences personnalisées.", { adAccountId: z.string(), fields: z.string().optional(), limit: z.number().int().optional() }, async ({ adAccountId, fields, limit }) => { try { return ok(await listEdge(`act_${adAccountId.replace(/^act_/, "")}`, "customaudiences", { fields: fields ?? "id,name,subtype,approximate_count,delivery_status", limit })); } catch (e) { return fail(e); } });
-server.tool("facebook_list_pixels", "Liste les pixels/datasets accessibles.", { adAccountId: z.string(), fields: z.string().optional(), limit: z.number().int().optional() }, async ({ adAccountId, fields, limit }) => { try { return ok(await listEdge(`act_${adAccountId.replace(/^act_/, "")}`, "adspixels", { fields: fields ?? "id,name,creation_time,last_fired_time", limit })); } catch (e) { return fail(e); } });
-server.tool("facebook_validate_token", "Vérifie le token et retourne les informations disponibles.", {}, async () => { try { return ok(await graphApiRequest({ path: "me", params: { fields: "id,name" } })); } catch (e) { return fail(e); } });
+registerAction("facebook_list_ad_accounts", "Liste les comptes publicitaires accessibles.", {}, async () => { try { return ok(await graphApiRequest({ path: "me/adaccounts", params: { fields: "id,account_id,name,account_status,currency,timezone_name,business" } })); } catch (e) { return fail(e); } });
+registerAction("facebook_list_campaigns", "Liste les campagnes d'un compte publicitaire.", { adAccountId: z.string(), fields: z.string().optional(), limit: z.number().int().optional() }, async ({ adAccountId, fields, limit }) => { try { return ok(await listEdge(`act_${adAccountId.replace(/^act_/, "")}`, "campaigns", { fields: fields ?? "id,name,objective,status,effective_status,daily_budget,lifetime_budget,created_time,updated_time", limit })); } catch (e) { return fail(e); } });
+registerAction("facebook_list_adsets", "Liste les ensembles de publicités.", { adAccountId: z.string(), fields: z.string().optional(), limit: z.number().int().optional() }, async ({ adAccountId, fields, limit }) => { try { return ok(await listEdge(`act_${adAccountId.replace(/^act_/, "")}`, "adsets", { fields: fields ?? "id,name,campaign_id,status,effective_status,daily_budget,lifetime_budget,targeting,optimization_goal,billing_event", limit })); } catch (e) { return fail(e); } });
+registerAction("facebook_list_ads", "Liste les annonces publicitaires.", { adAccountId: z.string(), fields: z.string().optional(), limit: z.number().int().optional() }, async ({ adAccountId, fields, limit }) => { try { return ok(await listEdge(`act_${adAccountId.replace(/^act_/, "")}`, "ads", { fields: fields ?? "id,name,adset_id,campaign_id,status,effective_status,creative", limit })); } catch (e) { return fail(e); } });
+registerAction("facebook_list_adcreatives", "Liste les créations publicitaires.", { adAccountId: z.string(), fields: z.string().optional(), limit: z.number().int().optional() }, async ({ adAccountId, fields, limit }) => { try { return ok(await listEdge(`act_${adAccountId.replace(/^act_/, "")}`, "adcreatives", { fields: fields ?? "id,name,object_story_spec,asset_feed_spec,status", limit })); } catch (e) { return fail(e); } });
+registerAction("facebook_list_custom_audiences", "Liste les audiences personnalisées.", { adAccountId: z.string(), fields: z.string().optional(), limit: z.number().int().optional() }, async ({ adAccountId, fields, limit }) => { try { return ok(await listEdge(`act_${adAccountId.replace(/^act_/, "")}`, "customaudiences", { fields: fields ?? "id,name,subtype,approximate_count,delivery_status", limit })); } catch (e) { return fail(e); } });
+registerAction("facebook_list_pixels", "Liste les pixels/datasets accessibles.", { adAccountId: z.string(), fields: z.string().optional(), limit: z.number().int().optional() }, async ({ adAccountId, fields, limit }) => { try { return ok(await listEdge(`act_${adAccountId.replace(/^act_/, "")}`, "adspixels", { fields: fields ?? "id,name,creation_time,last_fired_time", limit })); } catch (e) { return fail(e); } });
+registerAction("facebook_validate_token", "Vérifie le token et retourne les informations disponibles.", {}, async () => { try { return ok(await graphApiRequest({ path: "me", params: { fields: "id,name" } })); } catch (e) { return fail(e); } });
 
 /* ==================== Workflow combiné ==================== */
 
-server.tool(
+registerAction(
   "repost_telegram_to_facebook",
   "Workflow complet : télécharge une vidéo Telegram puis la republie directement sur " +
     "une Page Facebook avec une description personnalisée. Combine download + post.",
@@ -237,9 +298,8 @@ server.tool(
     description: z.string().optional().describe("Description personnalisée pour Facebook."),
     title: z.string().optional().describe("Titre de la vidéo sur Facebook."),
     pageId: z.string().optional().describe("Page Facebook cible (sinon FACEBOOK_PAGE_ID)."),
-    pageAccessToken: z.string().optional().describe("Page Access Token spécifique."),
   },
-  async ({ chat, messageId, description, title, pageId, pageAccessToken }) => {
+  async ({ chat, messageId, description, title, pageId }) => {
     try {
       const { path, video } = await downloadVideo(chat, messageId);
       const result = await postVideoToPage({
@@ -247,7 +307,6 @@ server.tool(
         description: description ?? video.caption,
         title,
         pageId,
-        pageAccessToken,
       });
       return ok({ downloaded: path, telegramCaption: video.caption, facebook: result });
     } catch (e) {
@@ -310,9 +369,36 @@ function writeJson(res: ServerResponse, status: number, payload: unknown): void 
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
     "access-control-allow-origin": "*",
-    "access-control-expose-headers": "Mcp-Session-Id",
+    "access-control-expose-headers": "Mcp-Session-Id, WWW-Authenticate",
   });
   res.end(JSON.stringify(payload));
+}
+
+function writeToolAuthChallenge(
+  res: ServerResponse,
+  id: unknown,
+  error: string,
+  description: string,
+  scope = "mcp",
+): void {
+  const challenge = oauthChallenge(error, description, scope);
+  if (res.headersSent) return;
+  res.writeHead(200, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+    "access-control-allow-origin": "*",
+    "access-control-expose-headers": "WWW-Authenticate, Mcp-Session-Id",
+    "www-authenticate": challenge,
+  });
+  res.end(JSON.stringify({
+    jsonrpc: "2.0",
+    id: id ?? null,
+    result: {
+      content: [{ type: "text", text: `Authentication required: ${description}` }],
+      isError: true,
+      _meta: { "mcp/www_authenticate": [challenge] },
+    },
+  }));
 }
 
 async function closeSession(id: string, session: HttpSession): Promise<void> {
@@ -336,7 +422,7 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
     res.writeHead(204, {
       "access-control-allow-origin": "*",
       "access-control-allow-methods": "GET,POST,DELETE,OPTIONS",
-      "access-control-allow-headers": "Content-Type, Accept, Mcp-Session-Id, Last-Event-ID",
+      "access-control-allow-headers": "Authorization, Content-Type, Accept, Mcp-Session-Id, Last-Event-ID, Origin",
       "access-control-expose-headers": "Mcp-Session-Id",
     });
     res.end();
@@ -363,10 +449,11 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
     const redirectUri = url.searchParams.get("redirect_uri") ?? "";
     const responseType = url.searchParams.get("response_type") ?? "";
     const codeChallenge = url.searchParams.get("code_challenge") ?? "";
+    const codeChallengeMethod = url.searchParams.get("code_challenge_method") ?? "";
     const scope = url.searchParams.get("scope") ?? "mcp";
     const resource = url.searchParams.get("resource") ?? "";
     const state = url.searchParams.get("state") ?? "";
-    if (responseType !== "code" || !clientId || !redirectUri || !codeChallenge || resource !== (process.env.MCP_PUBLIC_URL || `https://${req.headers.host ?? ""}`).replace(/\/$/, "")) {
+    if (responseType !== "code" || !clientId || !redirectUri || !codeChallenge || codeChallengeMethod !== "S256" || resource !== (process.env.MCP_PUBLIC_URL || `https://${req.headers.host ?? ""}`).replace(/\/$/, "")) {
       writeJson(res, 400, { error: "invalid_request", error_description: "Paramètres OAuth invalides ou resource manquant." });
       return;
     }
@@ -382,6 +469,7 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
     const clientId = String(body.client_id ?? "");
     const redirectUri = String(body.redirect_uri ?? "");
     const codeChallenge = String(body.code_challenge ?? "");
+    const codeChallengeMethod = String(body.code_challenge_method ?? "S256");
     const scope = String(body.scope ?? "mcp");
     const resource = String(body.resource ?? "");
     const state = String(body.state ?? "");
@@ -390,6 +478,7 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
       return;
     }
     try {
+      if (codeChallengeMethod !== "S256") throw new Error("unsupported_code_challenge_method");
       const code = createAuthorizationCode({ clientId, redirectUri, codeChallenge, scope, resource });
       const redirect = new URL(redirectUri);
       redirect.searchParams.set("code", code);
@@ -429,6 +518,8 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
       service: "mcp-telegram-facebook",
       transport: "streamable-http",
       sessions: sessions.size,
+      toolCount: REGISTERED_TOOL_NAMES.size,
+      tools: Array.from(REGISTERED_TOOL_NAMES).sort(),
     });
     return;
   }
@@ -438,31 +529,39 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
     return;
   }
 
-  if (!oauthConfigPresent()) {
-    authFailure(res, "invalid_token", "OAuth is not configured. Set OAUTH_JWT_SECRET, MCP_AUTH_USERNAME and MCP_AUTH_PASSWORD.");
-    return;
-  }
-
-  const token = bearerToken({ headers: req.headers });
-  if (!token) {
-    authFailure(res, "invalid_token", "Authentication required.");
-    return;
-  }
-  try {
-    verifyAccessToken(token, ["mcp"]);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message === "insufficient_scope") {
-      authFailure(res, "insufficient_scope", "The mcp scope is required.", 403);
-    } else {
-      authFailure(res, "invalid_token", "The access token is invalid or expired.");
-    }
-    return;
-  }
-
+  // Read the MCP envelope before authentication. Initialization and tools/list
+  // are intentionally discoverable without a token so ChatGPT can see the tool
+  // declarations, security metadata and annotations. Actual tool execution is
+  // gated and receives a tool-level OAuth challenge when authentication is absent.
   const sessionIdHeader = req.headers["mcp-session-id"];
   const sessionId = Array.isArray(sessionIdHeader) ? sessionIdHeader[0] : sessionIdHeader;
   const body = req.method === "POST" ? await readBody(req) : undefined;
+  const method = typeof body?.method === "string" ? body.method : "";
+  const requestId = body?.id ?? null;
+  const isToolCall = method === "tools/call";
+
+  if (isToolCall) {
+    if (!oauthConfigPresent()) {
+      writeToolAuthChallenge(res, requestId, "invalid_token", "OAuth is not configured on the server.");
+      return;
+    }
+    const token = bearerToken({ headers: req.headers });
+    if (!token) {
+      writeToolAuthChallenge(res, requestId, "invalid_token", "No access token was provided.");
+      return;
+    }
+    try {
+      verifyAccessToken(token, ["mcp"]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message === "insufficient_scope") {
+        writeToolAuthChallenge(res, requestId, "insufficient_scope", "The mcp scope is required.");
+      } else {
+        writeToolAuthChallenge(res, requestId, "invalid_token", "The access token is invalid or expired.");
+      }
+      return;
+    }
+  }
 
   // Existing session: reuse EXACTLY the transport/server pair that belongs to it.
   if (sessionId) {

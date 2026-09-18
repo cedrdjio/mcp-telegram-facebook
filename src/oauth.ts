@@ -9,6 +9,7 @@ const PASSWORD = process.env.MCP_AUTH_PASSWORD || "";
 const ACCESS_TTL = 60 * 60;
 const CODE_TTL = 5 * 60;
 const ALLOWED_SCOPES = new Set(["mcp", "facebook.read", "facebook.write"]);
+const USED_AUTH_CODES = new Set<string>();
 
 function requireSecret(): string {
   if (!JWT_SECRET || JWT_SECRET.length < 32) {
@@ -24,6 +25,10 @@ function b64url(input: string | Buffer): string {
 function fromB64url(input: string): Buffer {
   const normalized = input.replace(/-/g, "+").replace(/_/g, "/");
   return Buffer.from(normalized + "=".repeat((4 - (normalized.length % 4)) % 4), "base64");
+}
+
+function codeFingerprint(code: string): string {
+  return createHash("sha256").update(code).digest("hex");
 }
 
 function signJwt(payload: Record<string, unknown>): string {
@@ -89,6 +94,7 @@ export function oauthAuthorizationServerMetadata() {
     token_endpoint_auth_methods_supported: ["none"],
     scopes_supported: ["mcp", "facebook.read", "facebook.write"],
     client_id_metadata_document_supported: true,
+    authorization_response_iss_parameter_supported: true,
   };
 }
 
@@ -134,12 +140,15 @@ export function exchangeAuthorizationCode(args: {
   codeVerifier: string;
   resource: string;
 }) {
+  const fingerprint = codeFingerprint(args.code);
+  if (USED_AUTH_CODES.has(fingerprint)) throw new Error("invalid_grant");
   const payload = verifyJwt(args.code, "oauth-token");
   if (payload.typ !== "oauth_code" || payload.aud !== "oauth-token") throw new Error("invalid_grant");
   if (payload.client_id !== args.clientId || payload.sub !== args.clientId) throw new Error("invalid_grant");
   if (payload.redirect_uri !== args.redirectUri) throw new Error("invalid_grant");
   if (payload.resource !== args.resource || args.resource !== RESOURCE) throw new Error("invalid_grant");
   if (typeof payload.code_challenge !== "string" || !verifyPkce(args.codeVerifier, payload.code_challenge)) throw new Error("invalid_grant");
+  USED_AUTH_CODES.add(fingerprint);
   const now = Math.floor(Date.now() / 1000);
   return {
     access_token: signJwt({

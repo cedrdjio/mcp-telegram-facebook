@@ -1,39 +1,47 @@
-# Authentification ChatGPT — MCP Telegram–Facebook
+# OAuth ChatGPT — MCP Telegram–Facebook v0.4.0
 
-Cette version ajoute OAuth 2.1 + PKCE S256 pour le serveur Streamable HTTP Railway.
+Le serveur utilise le flux **OAuth 2.1 Authorization Code + PKCE S256** attendu par ChatGPT pour un serveur MCP distant.
 
-## Variables Railway
+## Discovery
 
-```env
-MCP_PUBLIC_URL=https://mcp-telegram-facebook-production.up.railway.app
-OAUTH_JWT_SECRET=<secret aleatoire >= 32 caracteres>
-MCP_AUTH_USERNAME=<identifiant OAuth>
-MCP_AUTH_PASSWORD=<mot de passe OAuth>
+```text
+GET https://mcp-telegram-facebook-production.up.railway.app/.well-known/oauth-protected-resource
+GET https://mcp-telegram-facebook-production.up.railway.app/.well-known/oauth-authorization-server
 ```
 
-Ne committez jamais ces valeurs.
+Le serveur annonce :
 
-## Découverte
+- resource = URL canonique du serveur
+- authorization server = URL canonique du serveur
+- authorization endpoint = `/oauth/authorize`
+- token endpoint = `/oauth/token`
+- PKCE = `S256`
+- client metadata document = activé
 
-- `GET /.well-known/oauth-protected-resource`
-- `GET /.well-known/oauth-authorization-server`
+## Sécurité des outils
 
-## OAuth
+Chaque outil protégé déclare une politique OAuth dans son descripteur via `_meta.securitySchemes` et le serveur vérifie réellement le token avant chaque `tools/call`.
 
-- `GET /oauth/authorize`
-- `POST /oauth/authorize`
-- `POST /oauth/token`
+Un appel non authentifié renvoie également :
 
-Le serveur accepte le Client ID Metadata Document de ChatGPT et les URI de callback ChatGPT sous `https://chatgpt.com/connector/...` ainsi que `https://chatgpt.com/connector_platform_oauth_redirect`.
-
-Le code d'autorisation est signé, lié au `redirect_uri`, au `client_id`, au `resource` et au PKCE `code_challenge`, puis expire après 5 minutes. Le token d'accès expire après 1 heure.
-
-## MCP
-
-Toutes les requêtes `/mcp` doivent présenter :
-
-```http
-Authorization: Bearer <access_token>
+```json
+{
+  "isError": true,
+  "_meta": {
+    "mcp/www_authenticate": ["Bearer ..."]
+  }
+}
 ```
 
-Le serveur vérifie l'émetteur, l'audience, l'expiration et le scope `mcp`. En absence de token valide, il renvoie `401` avec `WWW-Authenticate` pointant vers les métadonnées de ressource protégée.
+Cette combinaison permet à ChatGPT de découvrir les outils puis de déclencher l'association OAuth au moment de l'appel.
+
+## Secrets
+
+Ne mettez jamais dans GitHub :
+
+- `FACEBOOK_ACCESS_TOKEN`
+- `OAUTH_JWT_SECRET`
+- `MCP_AUTH_PASSWORD`
+- `TELEGRAM_SESSION`
+
+Ils doivent rester dans Railway Variables/Secrets.
