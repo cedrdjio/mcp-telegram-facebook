@@ -29,8 +29,12 @@ import {
 function createServer() {
 const server = new McpServer({
   name: "mcp-telegram-facebook",
-  version: "0.1.0",
+  version: "0.3.0",
 });
+
+// All tools are registered synchronously in this function BEFORE any transport
+// is connected. Each HTTP session receives a fresh createServer() instance.
+console.error("MCP server factory: registering universal Facebook/Telegram tools");
 
 /** Enveloppe une valeur en réponse MCP JSON lisible + gère les erreurs. */
 function ok(data: unknown) {
@@ -529,7 +533,8 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
     console.error("MCP transport error:", error);
   };
 
-  // CRITICAL: this server instance is created above solely for this transport.
+  // CRITICAL: createServer() has already registered ALL tools before connect().
+  // Never register tools after this point and never reuse this server for another transport.
   await server.connect(transport);
   await transport.handleRequest(req, res, body);
 }

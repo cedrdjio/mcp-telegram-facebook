@@ -249,3 +249,18 @@ Variables Railway à définir :
 - `MCP_AUTH_PASSWORD` : mot de passe de connexion OAuth
 
 Le flux utilise le Client ID Metadata Document (CIMD) de ChatGPT et accepte les callbacks ChatGPT sous `https://chatgpt.com/connector/...`. Les codes d'autorisation sont signés et expirent rapidement ; aucun code ou mot de passe n'est écrit dans Git.
+
+## V3 — déploiement avec identifiants existants
+
+Cette archive ne remplace pas les variables d’environnement déjà configurées sur Railway.
+Conserver les variables Facebook/Telegram existantes (`FACEBOOK_*`, `TELEGRAM_*`, etc.).
+Pour OAuth ChatGPT, renseigner uniquement les variables OAuth si elles ne sont pas déjà présentes :
+
+- `MCP_PUBLIC_URL`
+- `OAUTH_JWT_SECRET`
+- `MCP_AUTH_USERNAME`
+- `MCP_AUTH_PASSWORD`
+
+Le serveur crée une instance `McpServer` et un transport Streamable HTTP par session. Tous les outils,
+y compris le moteur universel Graph API, sont enregistrés dans `createServer()` avant `server.connect(transport)`.
+Ne pas supprimer les identifiants Facebook/Telegram existants lors du redéploiement.
