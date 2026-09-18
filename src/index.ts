@@ -1,9 +1,6 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { createServer, IncomingMessage, ServerResponse } from "node:http";
-import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 import { listVideos as listTelegramVideos, downloadVideo } from "./telegram.js";
@@ -17,6 +14,7 @@ import {
   universalGraphRequest, analyzeGraphRequest, diagnoseFacebook,
 } from "./facebook.js";
 
+function createServer() {
 const server = new McpServer({
   name: "mcp-telegram-facebook",
   version: "0.1.0",
@@ -150,7 +148,7 @@ server.tool(
 
 server.tool("facebook_list_videos", "Liste les vidéos/Reels publiés avec leur videoId et post_id.", {
   pageId: z.string().optional(), limit: z.number().int().min(1).max(100).default(25)
-}, async ({ pageId, limit }) => { try { return ok(await listVideos(pageId)); } catch (e) { return fail(e); } });
+}, async ({ pageId, limit }) => { try { return ok(await listVideos(pageId, limit)); } catch (e) { return fail(e); } });
 
 server.tool("facebook_update_video", "Modifie la description et éventuellement le titre d'un Reel existant.", {
   videoId: z.string(), description: z.string(), title: z.string().optional()
@@ -242,80 +240,188 @@ server.tool(
   }
 );
 
+return server;
+}
+
 /* ============================ Démarrage ============================ */
 
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+import { createServer as createHttpServer, IncomingMessage, ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+
+type HttpSession = {
+  transport: StreamableHTTPServerTransport;
+  server: McpServer;
+};
+
+// IMPORTANT: the MCP SDK Protocol allows only one transport per Protocol/McpServer
+// instance. HTTP therefore uses one McpServer + one transport PER MCP SESSION.
+// Never reuse the same McpServer across sessions.
+const sessions = new Map<string, HttpSession>();
+
+async function readJson(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(Buffer.from(chunk));
   const raw = Buffer.concat(chunks).toString("utf8");
-  if (!raw.trim()) return undefined;
-  try { return JSON.parse(raw); }
-  catch { throw new Error("Corps JSON invalide"); }
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error("JSON MCP invalide");
+  }
 }
 
-async function startHttpServer() {
-  const sessions = new Map<string, StreamableHTTPServerTransport>();
+function writeJson(res: ServerResponse, status: number, payload: unknown): void {
+  if (res.headersSent) return;
+  res.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+    "access-control-allow-origin": "*",
+    "access-control-expose-headers": "Mcp-Session-Id",
+  });
+  res.end(JSON.stringify(payload));
+}
 
-  const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-    // Health check Railway.
-    if (req.method === "GET" && (req.url === "/" || req.url === "/health")) {
-      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ ok: true, service: "mcp-telegram-facebook" }));
+async function closeSession(id: string, session: HttpSession): Promise<void> {
+  if (sessions.get(id) === session) sessions.delete(id);
+  try {
+    await session.transport.close();
+  } catch (error) {
+    console.error("MCP transport close error:", error);
+  }
+  try {
+    await session.server.close();
+  } catch (error) {
+    console.error("MCP server close error:", error);
+  }
+}
+
+async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, {
+      "access-control-allow-origin": "*",
+      "access-control-allow-methods": "GET,POST,DELETE,OPTIONS",
+      "access-control-allow-headers": "Content-Type, Accept, Mcp-Session-Id, Last-Event-ID",
+      "access-control-expose-headers": "Mcp-Session-Id",
+    });
+    res.end();
+    return;
+  }
+
+  if (url.pathname === "/health") {
+    writeJson(res, 200, {
+      ok: true,
+      service: "mcp-telegram-facebook",
+      transport: "streamable-http",
+      sessions: sessions.size,
+    });
+    return;
+  }
+
+  if (url.pathname !== "/mcp") {
+    writeJson(res, 404, { error: "Not Found" });
+    return;
+  }
+
+  const sessionIdHeader = req.headers["mcp-session-id"];
+  const sessionId = Array.isArray(sessionIdHeader) ? sessionIdHeader[0] : sessionIdHeader;
+  const body = req.method === "POST" ? await readJson(req) : undefined;
+
+  // Existing session: reuse EXACTLY the transport/server pair that belongs to it.
+  if (sessionId) {
+    const session = sessions.get(sessionId);
+    if (!session) {
+      writeJson(res, 404, {
+        jsonrpc: "2.0",
+        error: { code: -32001, message: "MCP session not found" },
+        id: null,
+      });
       return;
     }
 
-    if (req.url !== "/mcp") {
-      res.writeHead(404, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ error: "Not found" }));
+    if (req.method === "DELETE") {
+      await closeSession(sessionId, session);
+      res.writeHead(204, {
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "Mcp-Session-Id",
+      });
+      res.end();
       return;
     }
 
-    try {
-      const sessionId = req.headers["mcp-session-id"] as string | undefined;
-      let transport = sessionId ? sessions.get(sessionId) : undefined;
+    await session.transport.handleRequest(req, res, body);
+    return;
+  }
 
-      if (!transport) {
-        if (req.method !== "POST") {
-          res.writeHead(400, { "content-type": "application/json; charset=utf-8" });
-          res.end(JSON.stringify({ error: "Session MCP absente. Envoyez initialize en POST." }));
-          return;
-        }
-        transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => randomUUID(),
-          onsessioninitialized: (id) => { sessions.set(id, transport!); },
-        });
-        transport.onclose = () => {
-          const id = transport?.sessionId;
-          if (id) sessions.delete(id);
-        };
-        await server.connect(transport);
-      }
+  // A new HTTP MCP session MUST start with initialize. Build a fresh
+  // McpServer/Protocol and a fresh transport for this session.
+  if (req.method !== "POST" || !isInitializeRequest(body)) {
+    writeJson(res, 400, {
+      jsonrpc: "2.0",
+      error: {
+        code: -32000,
+        message: "Bad Request: initialize is required to create an MCP session",
+      },
+      id: null,
+    });
+    return;
+  }
 
-      const body = req.method === "POST" ? await readJsonBody(req) : undefined;
-      await transport.handleRequest(req, res, body);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (!res.headersSent) res.writeHead(500, { "content-type": "application/json; charset=utf-8" });
-      if (!res.writableEnded) res.end(JSON.stringify({ error: message }));
-      console.error("MCP HTTP error:", message);
+  const server = createServer();
+  let session!: HttpSession;
+
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: () => randomUUID(),
+    // Railway/ChatGPT works well with direct JSON responses and does not
+    // require a long-lived SSE response for ordinary tool calls.
+    enableJsonResponse: true,
+    onsessioninitialized: (id) => {
+      sessions.set(id, session);
+      console.error(`MCP session initialized: ${id}`);
+    },
+  });
+
+  session = { transport, server };
+
+  transport.onclose = () => {
+    const id = transport.sessionId;
+    if (id) {
+      const current = sessions.get(id);
+      if (current === session) sessions.delete(id);
+      console.error(`MCP session closed: ${id}`);
     }
-  });
+  };
 
-  const port = Number(process.env.PORT || 3000);
-  httpServer.listen(port, "0.0.0.0", () => {
-    console.error(`Serveur MCP telegram-facebook HTTP démarré sur le port ${port}.`);
-  });
+  transport.onerror = (error) => {
+    console.error("MCP transport error:", error);
+  };
+
+  // CRITICAL: this server instance is created above solely for this transport.
+  await server.connect(transport);
+  await transport.handleRequest(req, res, body);
 }
 
 async function main() {
-  // Railway utilise HTTP; le mode stdio reste disponible localement avec MCP_TRANSPORT=stdio.
-  if ((process.env.MCP_TRANSPORT || "http").toLowerCase() === "stdio") {
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
-    console.error("Serveur MCP telegram-facebook démarré (stdio).");
-  } else {
-    await startHttpServer();
+  const mode = (process.env.MCP_TRANSPORT ?? "stdio").toLowerCase();
+  if (mode === "http" || mode === "streamable-http" || process.env.RAILWAY_ENVIRONMENT) {
+    const port = Number(process.env.PORT ?? 3000);
+    const httpServer = createHttpServer((req, res) => {
+      handleHttp(req, res).catch((err) => {
+        console.error("HTTP MCP error:", err);
+        if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" });
+        if (!res.writableEnded) res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+      });
+    });
+    httpServer.listen(port, "0.0.0.0", () => console.error(`MCP HTTP listening on 0.0.0.0:${port}`));
+    return;
   }
+  const server = createServer();
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error("Serveur MCP telegram-facebook démarré (stdio).");
 }
 
 main().catch((err) => {

@@ -216,3 +216,15 @@ Pour cibler une autre Page, fournissez `pageId` dans l’outil concerné ou util
 ```
 
 Le token doit disposer des droits sur la Page ciblée. Un seul token peut gérer plusieurs Pages accessibles via `/me/accounts`; le MCP ne doit jamais coder une Page en dur.
+
+## Railway / Streamable HTTP
+
+Sur Railway, configure `MCP_TRANSPORT=http`. The server listens on `0.0.0.0:$PORT` and exposes:
+
+- `GET /health`
+- `POST /mcp`
+- `DELETE /mcp` for an MCP session
+
+Each MCP HTTP session receives its own `McpServer`/Protocol instance and its own `StreamableHTTPServerTransport`. This is required by the TypeScript SDK because one Protocol instance cannot be connected to multiple transports at the same time.
+
+The universal Graph API tool remains available as `facebook_universal_request`; it is not replaced by the specialized Facebook tools.

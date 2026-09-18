@@ -154,10 +154,10 @@ export async function postToPageFeed(args: {
 
 
 /* ------------------------- Vidéos / commentaires ------------------------- */
-export async function listVideos(pageId?: string): Promise<unknown> {
+export async function listVideos(pageId?: string, limit = 25): Promise<unknown> {
   const id = pageId || config.facebook.pageId;
   if (!id) throw new Error("Aucune Page cible.");
-  return graphRequest(`${id}/videos`, { params: { fields: "id,title,description,created_time,permalink_url,length,post_id,is_published,status" } });
+  return graphRequest(`${id}/videos`, { params: { fields: "id,title,description,created_time,permalink_url,length,post_id,is_published,status", limit } });
 }
 
 export async function updateVideo(videoId: string, description: string, title?: string): Promise<unknown> {
@@ -287,6 +287,21 @@ export function analyzeGraphRequest(args: {
   };
 }
 
+async function resolveGraphAccessToken(path: string): Promise<string | undefined> {
+  if (config.facebook.accessToken && !/^\d+(?:\/|$)/.test(path)) return undefined;
+  const pageId = path.match(/^(\d+)(?:\/|$)/)?.[1];
+  if (!pageId || !config.facebook.accessToken) return undefined;
+  try {
+    const pages = await graphRequest<GraphPaginationResponse<{ id: string; access_token?: string }>>(
+      "me/accounts",
+      { params: { fields: "id,access_token", limit: 100 } }
+    );
+    return pages.data?.find((page) => page.id === pageId)?.access_token;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function universalGraphRequest(args: {
   method?: UniversalMethod;
   path: string;
@@ -311,7 +326,7 @@ export async function universalGraphRequest(args: {
     path: args.path,
     method: args.method,
     params: args.params,
-    accessToken: args.accessToken,
+    accessToken: args.accessToken || await resolveGraphAccessToken(args.path),
   });
   if (!args.paginate || !first || typeof first !== "object" || !Array.isArray((first as any).data)) return first;
 
@@ -319,8 +334,11 @@ export async function universalGraphRequest(args: {
   let next = (first as any).paging?.next as string | undefined;
   let pages = 1;
   const maxPages = Math.max(1, Math.min(args.maxPages ?? 10, 50));
+  const paginationToken = args.accessToken || await resolveGraphAccessToken(args.path) || config.facebook.accessToken;
   while (next && pages < maxPages) {
-    const response = await fetch(next, { headers: { Authorization: `Bearer ${args.accessToken || config.facebook.accessToken}` } });
+    const nextUrl = new URL(next);
+    nextUrl.searchParams.delete("access_token");
+    const response = await fetch(nextUrl, { headers: { Authorization: `Bearer ${paginationToken}` } });
     const data = (await response.json()) as GraphPaginationResponse;
     if (!response.ok || data.error) throw new Error(`Pagination Graph API ${response.status}: ${data.error?.message ?? "Erreur"}`);
     collected.push(...(data.data ?? []));
