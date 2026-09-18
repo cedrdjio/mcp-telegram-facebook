@@ -2,6 +2,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { createServer } from "node:http";
 
 import { listVideos as listTelegramVideos, downloadVideo } from "./telegram.js";
 import {
@@ -242,6 +243,23 @@ server.tool(
 /* ============================ Démarrage ============================ */
 
 async function main() {
+  // Railway attend un port HTTP pour considérer le service comme sain.
+  // Le transport MCP reste en stdio pour conserver la compatibilité Claude/Desktop.
+  const port = Number(process.env.PORT ?? 3000);
+  const healthServer = createServer((req, res) => {
+    if (req.url === "/health" || req.url === "/") {
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ status: "ok", service: "mcp-telegram-facebook" }));
+      return;
+    }
+    res.writeHead(404, { "content-type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ error: "Not found" }));
+  });
+
+  healthServer.listen(port, "0.0.0.0", () => {
+    console.error(`Health server listening on port ${port}.`);
+  });
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
   // Les logs vont sur stderr pour ne pas polluer le canal stdio (protocole MCP).
