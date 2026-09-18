@@ -435,7 +435,10 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
     return;
   }
 
-  if (req.method === "GET" && url.pathname === "/.well-known/oauth-authorization-server") {
+  if (req.method === "GET" && (url.pathname === "/.well-known/oauth-authorization-server" || url.pathname === "/.well-known/openid-configuration")) {
+    // ChatGPT may probe OIDC discovery after the OAuth token exchange.
+    // This server uses the same authorization-server metadata for both
+    // discovery documents; issuer/endpoints remain canonical and identical.
     writeJson(res, 200, oauthAuthorizationServerMetadata());
     return;
   }
@@ -524,7 +527,10 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
     return;
   }
 
-  if (url.pathname !== "/mcp") {
+  // Accept both the documented /mcp endpoint and the origin-root endpoint.
+  // Some MCP clients reuse the protected resource URL itself as the MCP URL.
+  const isMcpPath = url.pathname === "/mcp" || url.pathname === "/";
+  if (!isMcpPath) {
     writeJson(res, 404, { error: "Not Found" });
     return;
   }

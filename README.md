@@ -35,9 +35,10 @@ Pour Telegram, conserver également les variables existantes (`TELEGRAM_API_ID`,
 
 ## Endpoints
 
-- `POST /mcp` — Streamable HTTP MCP
+- `POST /mcp` et `POST /` — Streamable HTTP MCP (les deux routes sont acceptées)
 - `GET /.well-known/oauth-protected-resource` — Protected Resource Metadata
 - `GET /.well-known/oauth-authorization-server` — Authorization Server Metadata
+- `GET /.well-known/openid-configuration` — alias de découverte compatible OIDC
 - `GET /oauth/authorize` — Authorization Code + PKCE
 - `POST /oauth/authorize` — validation des identifiants et émission du code
 - `POST /oauth/token` — échange PKCE contre access token

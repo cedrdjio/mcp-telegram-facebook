@@ -45,3 +45,8 @@ Ne mettez jamais dans GitHub :
 - `TELEGRAM_SESSION`
 
 Ils doivent rester dans Railway Variables/Secrets.
+
+
+### Compatibilité de routage
+
+Le serveur accepte désormais `POST /mcp` et `POST /` pour Streamable HTTP. Il expose aussi `/.well-known/openid-configuration` en plus des métadonnées OAuth MCP afin de supporter les clients qui effectuent une découverte OIDC après l'échange du code.
