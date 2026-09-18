@@ -1,6 +1,6 @@
 {
   "name": "mcp-telegram-facebook",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Serveur MCP pour récupérer des vidéos Telegram, les reposter sur Facebook avec des descriptions personnalisées, et gérer un compte Facebook ainsi que ses campagnes publicitaires.",
   "type": "module",
   "bin": {

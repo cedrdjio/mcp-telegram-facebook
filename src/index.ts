@@ -2,6 +2,18 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import {
+  oauthProtectedResourceMetadata,
+  oauthAuthorizationServerMetadata,
+  createAuthorizationCode,
+  exchangeAuthorizationCode,
+  loginPage,
+  isValidLogin,
+  bearerToken,
+  verifyAccessToken,
+  oauthChallenge,
+  oauthConfigPresent,
+} from "./oauth.js";
 
 import { listVideos as listTelegramVideos, downloadVideo } from "./telegram.js";
 import {
@@ -260,16 +272,32 @@ type HttpSession = {
 // Never reuse the same McpServer across sessions.
 const sessions = new Map<string, HttpSession>();
 
-async function readJson(req: IncomingMessage): Promise<unknown> {
+async function readBody(req: IncomingMessage): Promise<Record<string, unknown> | undefined> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(Buffer.from(chunk));
   const raw = Buffer.concat(chunks).toString("utf8");
   if (!raw) return undefined;
+  const contentType = String(req.headers["content-type"] ?? "");
+  if (contentType.includes("application/x-www-form-urlencoded")) {
+    return Object.fromEntries(new URLSearchParams(raw));
+  }
   try {
-    return JSON.parse(raw);
+    return JSON.parse(raw) as Record<string, unknown>;
   } catch {
     throw new Error("JSON MCP invalide");
   }
+}
+
+function authFailure(res: ServerResponse, error: string, description: string, status = 401): void {
+  if (res.headersSent) return;
+  res.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+    "access-control-allow-origin": "*",
+    "access-control-expose-headers": "Mcp-Session-Id, WWW-Authenticate",
+    "www-authenticate": oauthChallenge(error, description),
+  });
+  res.end(JSON.stringify({ error, error_description: description }));
 }
 
 function writeJson(res: ServerResponse, status: number, payload: unknown): void {
@@ -311,6 +339,86 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
     return;
   }
 
+  // OAuth discovery is intentionally public so ChatGPT can discover the authorization server.
+  if (req.method === "GET" && url.pathname === "/.well-known/oauth-protected-resource") {
+    writeJson(res, 200, oauthProtectedResourceMetadata());
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/.well-known/oauth-authorization-server") {
+    writeJson(res, 200, oauthAuthorizationServerMetadata());
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/oauth/authorize") {
+    if (!oauthConfigPresent()) {
+      writeJson(res, 503, { error: "server_error", error_description: "OAuth is not configured on this server." });
+      return;
+    }
+    const clientId = url.searchParams.get("client_id") ?? "";
+    const redirectUri = url.searchParams.get("redirect_uri") ?? "";
+    const responseType = url.searchParams.get("response_type") ?? "";
+    const codeChallenge = url.searchParams.get("code_challenge") ?? "";
+    const scope = url.searchParams.get("scope") ?? "mcp";
+    const resource = url.searchParams.get("resource") ?? "";
+    const state = url.searchParams.get("state") ?? "";
+    if (responseType !== "code" || !clientId || !redirectUri || !codeChallenge || resource !== (process.env.MCP_PUBLIC_URL || `https://${req.headers.host ?? ""}`).replace(/\/$/, "")) {
+      writeJson(res, 400, { error: "invalid_request", error_description: "Paramètres OAuth invalides ou resource manquant." });
+      return;
+    }
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+    res.end(loginPage({ clientId, redirectUri, codeChallenge, scope, resource, state }));
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/oauth/authorize") {
+    const body = await readBody(req) ?? {};
+    const username = String(body.username ?? "");
+    const password = String(body.password ?? "");
+    const clientId = String(body.client_id ?? "");
+    const redirectUri = String(body.redirect_uri ?? "");
+    const codeChallenge = String(body.code_challenge ?? "");
+    const scope = String(body.scope ?? "mcp");
+    const resource = String(body.resource ?? "");
+    const state = String(body.state ?? "");
+    if (!isValidLogin(username, password)) {
+      writeJson(res, 401, { error: "access_denied", error_description: "Identifiants invalides." });
+      return;
+    }
+    try {
+      const code = createAuthorizationCode({ clientId, redirectUri, codeChallenge, scope, resource });
+      const redirect = new URL(redirectUri);
+      redirect.searchParams.set("code", code);
+      if (state) redirect.searchParams.set("state", state);
+      res.writeHead(302, { Location: redirect.toString(), "cache-control": "no-store" });
+      res.end();
+    } catch (error) {
+      writeJson(res, 400, { error: "invalid_request", error_description: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/oauth/token") {
+    const body = await readBody(req) ?? {};
+    const grantType = String(body.grant_type ?? "");
+    const code = String(body.code ?? "");
+    const clientId = String(body.client_id ?? "");
+    const redirectUri = String(body.redirect_uri ?? "");
+    const codeVerifier = String(body.code_verifier ?? "");
+    const resource = String(body.resource ?? "");
+    if (grantType !== "authorization_code") {
+      writeJson(res, 400, { error: "unsupported_grant_type" });
+      return;
+    }
+    try {
+      const token = exchangeAuthorizationCode({ code, clientId, redirectUri, codeVerifier, resource });
+      writeJson(res, 200, token);
+    } catch (error) {
+      writeJson(res, 400, { error: "invalid_grant", error_description: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
   if (url.pathname === "/health") {
     writeJson(res, 200, {
       ok: true,
@@ -326,9 +434,31 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
     return;
   }
 
+  if (!oauthConfigPresent()) {
+    authFailure(res, "invalid_token", "OAuth is not configured. Set OAUTH_JWT_SECRET, MCP_AUTH_USERNAME and MCP_AUTH_PASSWORD.");
+    return;
+  }
+
+  const token = bearerToken({ headers: req.headers });
+  if (!token) {
+    authFailure(res, "invalid_token", "Authentication required.");
+    return;
+  }
+  try {
+    verifyAccessToken(token, ["mcp"]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message === "insufficient_scope") {
+      authFailure(res, "insufficient_scope", "The mcp scope is required.", 403);
+    } else {
+      authFailure(res, "invalid_token", "The access token is invalid or expired.");
+    }
+    return;
+  }
+
   const sessionIdHeader = req.headers["mcp-session-id"];
   const sessionId = Array.isArray(sessionIdHeader) ? sessionIdHeader[0] : sessionIdHeader;
-  const body = req.method === "POST" ? await readJson(req) : undefined;
+  const body = req.method === "POST" ? await readBody(req) : undefined;
 
   // Existing session: reuse EXACTLY the transport/server pair that belongs to it.
   if (sessionId) {

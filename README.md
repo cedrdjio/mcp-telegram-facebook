@@ -228,3 +228,24 @@ Sur Railway, configure `MCP_TRANSPORT=http`. The server listens on `0.0.0.0:$POR
 Each MCP HTTP session receives its own `McpServer`/Protocol instance and its own `StreamableHTTPServerTransport`. This is required by the TypeScript SDK because one Protocol instance cannot be connected to multiple transports at the same time.
 
 The universal Graph API tool remains available as `facebook_universal_request`; it is not replaced by the specialized Facebook tools.
+
+## ChatGPT OAuth 2.1
+
+Le serveur HTTP Railway inclut maintenant une couche OAuth 2.1 avec PKCE S256 pour l'authentification de ChatGPT.
+
+Endpoints publics de découverte :
+- `GET /.well-known/oauth-protected-resource`
+- `GET /.well-known/oauth-authorization-server`
+- `GET /oauth/authorize`
+- `POST /oauth/authorize`
+- `POST /oauth/token`
+
+Le endpoint `/mcp` exige ensuite `Authorization: Bearer <access_token>` et vérifie l'émetteur, l'audience, l'expiration et le scope `mcp`.
+
+Variables Railway à définir :
+- `MCP_PUBLIC_URL=https://mcp-telegram-facebook-production.up.railway.app`
+- `OAUTH_JWT_SECRET` : secret aléatoire d'au moins 32 caractères
+- `MCP_AUTH_USERNAME` : identifiant de connexion OAuth
+- `MCP_AUTH_PASSWORD` : mot de passe de connexion OAuth
+
+Le flux utilise le Client ID Metadata Document (CIMD) de ChatGPT et accepte les callbacks ChatGPT sous `https://chatgpt.com/connector/...`. Les codes d'autorisation sont signés et expirent rapidement ; aucun code ou mot de passe n'est écrit dans Git.
